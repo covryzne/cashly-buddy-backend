@@ -1,0 +1,15 @@
+from fastapi import APIRouter
+
+from cashly.api.accounts import router as accounts_router
+from cashly.api.auth import router as auth_router
+from cashly.schemas.health import HealthData, HealthEnvelope
+
+router = APIRouter(prefix="/api/v1")
+router.include_router(accounts_router)
+router.include_router(auth_router)
+
+
+@router.get("/health", response_model=HealthEnvelope, tags=["Operations"])
+async def health() -> HealthEnvelope:
+    """Process liveness only; does not verify database or provider readiness."""
+    return HealthEnvelope(data=HealthData())

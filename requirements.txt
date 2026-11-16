@@ -1,0 +1,2 @@
+# Conda/venv entrypoint; keep all pins in one place.
+-r requirements.lock
