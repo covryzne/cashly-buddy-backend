@@ -70,6 +70,19 @@ async def verify_access_token(request: Request, token: str) -> Identity:
         name = name.strip() if isinstance(name, str) else ""
         if not 2 <= len(name) <= 40 or any(ord(char) < 32 for char in name):
             name = "Pengguna Cashly"
+        # Recovery proof never authorizes application/dashboard endpoints, even
+        # when its underlying provider JWT has not expired yet.
+        if request.app.state.database is not None:
+            from starlette.concurrency import run_in_threadpool
+
+            from cashly.repositories.password_recovery import is_recovery_token
+
+            if await run_in_threadpool(
+                is_recovery_token, request.app.state.database, UUID(user["id"]), token
+            ):
+                raise ApiError(
+                    403, "RECOVERY_SCOPE_ONLY", "Sesi ini hanya untuk mengatur ulang kata sandi."
+                )
         return Identity(
             user_id=UUID(user["id"]),
             email=user["email"],

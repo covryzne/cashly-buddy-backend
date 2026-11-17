@@ -1,10 +1,8 @@
-from datetime import datetime
 from typing import Literal
-from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
-from cashly.schemas.auth import EmailVerificationRequest, LoginRequest, VerifyEmailRequest
+from cashly.schemas.auth import LoginRequest
 
 
 class ProfileInput(BaseModel):
@@ -32,26 +30,21 @@ class EmptyAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class EmailChangeInput(EmailVerificationRequest):
-    pass
+class AccountDeletionInput(EmptyAction):
+    confirmation: Literal["HAPUS AKUN"]
+    current_password: SecretStr | None = Field(default=None, min_length=1, max_length=128)
 
 
-class SecurityCodeInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    challenge_id: UUID
-    token: SecretStr = Field(min_length=6, max_length=6)
-
-    @field_validator("token")
-    @classmethod
-    def digits_only(cls, value):
-        return VerifyEmailRequest.digits_only(value)
+class AccountDeletionData(BaseModel):
+    status: Literal["account_deleted"] = "account_deleted"
 
 
-class EmailChangeVerify(SecurityCodeInput):
-    address: Literal["current", "new"]
+class AccountDeletionEnvelope(BaseModel):
+    data: AccountDeletionData
 
 
-class PasswordChangeVerify(SecurityCodeInput):
+class PasswordUpdate(EmptyAction):
+    current_password: SecretStr = Field(min_length=1, max_length=128)
     password: SecretStr = Field(min_length=8, max_length=16)
 
     @field_validator("password")
@@ -60,23 +53,24 @@ class PasswordChangeVerify(SecurityCodeInput):
         return LoginRequest.password_composition(value)
 
 
-class SecurityChallengeData(BaseModel):
-    status: Literal["verification_required"]
-    challenge_id: UUID
-    expires_at: datetime
-    current_email: str
-    new_email: str | None
-
-
-class SecurityChallengeEnvelope(BaseModel):
-    data: SecurityChallengeData
+class PasswordSetupRequest(EmptyAction):
+    redirect_to: str = Field(max_length=2048)
 
 
 class SecurityResultData(BaseModel):
-    status: Literal["confirmation_pending", "email_changed", "password_changed"]
-    confirmed_current: bool = False
-    confirmed_new: bool = False
+    status: Literal["link_sent", "password_changed"]
 
 
 class SecurityResultEnvelope(BaseModel):
     data: SecurityResultData
+
+
+class GoogleConnectionData(BaseModel):
+    connected: bool
+    google_email: str | None
+    password_login_enabled: bool
+    can_disconnect: bool
+
+
+class GoogleConnectionEnvelope(BaseModel):
+    data: GoogleConnectionData

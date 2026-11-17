@@ -1,4 +1,6 @@
+from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
@@ -83,6 +85,71 @@ class VerifyEmailRequest(EmailVerificationRequest):
         if not all(char in "0123456789" for char in value.get_secret_value()):
             raise ValueError("OTP must contain six digits")
         return value
+
+
+class LinkRequest(EmailVerificationRequest):
+    redirect_to: str = Field(max_length=2048)
+
+
+class LinkProof(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    token_hash: SecretStr = Field(min_length=20, max_length=256)
+
+    @field_validator("token_hash")
+    @classmethod
+    def valid_hash(cls, value):
+        if not all(
+            char.isascii() and (char.isalnum() or char in "_-") for char in value.get_secret_value()
+        ):
+            raise ValueError("Invalid link proof")
+        return value
+
+
+class PasswordRecoveryStart(LinkProof, EmailVerificationRequest):
+    pass
+
+
+class PasswordRecoveryProof(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    recovery_id: UUID
+    recovery_token: SecretStr = Field(min_length=1, max_length=16384)
+
+
+class PasswordRecoveryData(BaseModel):
+    status: Literal["recovery_ready"] = "recovery_ready"
+    recovery_id: UUID
+    recovery_token: str = Field(repr=False)
+    expires_at: datetime
+    email: str
+
+
+class PasswordRecoveryEnvelope(BaseModel):
+    data: PasswordRecoveryData
+
+
+class PasswordRecoveryCancelledData(BaseModel):
+    status: Literal["recovery_cancelled"] = "recovery_cancelled"
+
+
+class PasswordRecoveryCancelledEnvelope(BaseModel):
+    data: PasswordRecoveryCancelledData
+
+
+class PasswordResetVerify(PasswordRecoveryProof):
+    password: SecretStr = Field(min_length=8, max_length=16)
+
+    @field_validator("password")
+    @classmethod
+    def composition(cls, value):
+        return LoginRequest.password_composition(value)
+
+
+class PasswordResetData(BaseModel):
+    status: Literal["password_reset"] = "password_reset"
+
+
+class PasswordResetEnvelope(BaseModel):
+    data: PasswordResetData
 
 
 class AuthSession(BaseModel):

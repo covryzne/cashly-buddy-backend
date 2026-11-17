@@ -124,10 +124,15 @@ def test_runtime_openapi_does_not_claim_unimplemented_endpoints(app):
         "/api/v1/auth/configuration",
         "/api/v1/me",
         "/api/v1/me/profile",
-        "/api/v1/me/security/email/request",
-        "/api/v1/me/security/email/verify",
-        "/api/v1/me/security/password/request",
-        "/api/v1/me/security/password/verify",
+        "/api/v1/me/account",
+        "/api/v1/me/security/password/setup/request",
+        "/api/v1/me/security/password/change",
+        "/api/v1/me/security/google",
+        "/api/v1/me/security/google/disconnect",
+        "/api/v1/auth/password/reset/request",
+        "/api/v1/auth/password/reset/verify",
+        "/api/v1/auth/password/reset/start",
+        "/api/v1/auth/password/reset/cancel",
         "/api/v1/expenses",
         "/api/v1/expenses/{identifier}",
         "/api/v1/expenses/{identifier}/restore",
@@ -147,9 +152,15 @@ def test_runtime_openapi_does_not_claim_unimplemented_endpoints(app):
     assert "HealthEnvelope" in schema["components"]["schemas"]
 
 
-@pytest.mark.parametrize("environment", ["staging", "prod"])
-def test_docs_disabled_outside_dev(environment):
+@pytest.mark.parametrize("environment", ["dev", "staging"])
+def test_docs_available_for_development_and_staging(environment):
     client = TestClient(create_app(Settings(environment=environment)))
+    assert client.get("/docs").status_code == 200
+    assert client.get("/openapi.json").status_code == 200
+
+
+def test_docs_disabled_in_production():
+    client = TestClient(create_app(Settings(environment="prod")))
     assert client.get("/docs").status_code == 404
     assert client.get("/openapi.json").status_code == 404
     assert client.get("/api/v1/health").status_code == 200

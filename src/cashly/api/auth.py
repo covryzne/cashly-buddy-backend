@@ -1,6 +1,6 @@
 import base64
 import json
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 import httpx2
 from fastapi import APIRouter, Request, Response
@@ -14,13 +14,60 @@ from cashly.schemas.auth import (
     AuthEnvelope,
     AuthSession,
     EmailVerificationRequest,
+    LinkRequest,
     LoginRequest,
+    PasswordRecoveryCancelledEnvelope,
+    PasswordRecoveryEnvelope,
+    PasswordRecoveryProof,
+    PasswordRecoveryStart,
+    PasswordResetEnvelope,
+    PasswordResetVerify,
     RegisterRequest,
     VerifyEmailRequest,
 )
 from cashly.services.accounts import bootstrap
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+
+@router.post("/password/reset/request", response_model=AuthEnvelope, status_code=202)
+async def request_password_reset(body: LinkRequest, request: Request):
+    from cashly.services.account_security import trusted_redirect
+
+    redirect = trusted_redirect(
+        request.app.state.settings, body.redirect_to, "/auth/password/callback"
+    )
+    await email_provider_action(
+        request, "/recover?" + urlencode({"redirect_to": redirect}), {"email": body.email}
+    )
+    return AuthEnvelope(data=AuthData(status="verification_required"))
+
+
+@router.post("/password/reset/verify", response_model=PasswordResetEnvelope)
+def verify_password_reset(body: PasswordResetVerify, request: Request):
+    from cashly.services.account_security import reset_password
+
+    return reset_password(request.app.state.settings, body, recovery_database(request))
+
+
+def recovery_database(request):
+    from cashly.api.accounts import database
+
+    return database(request)
+
+
+@router.post("/password/reset/start", response_model=PasswordRecoveryEnvelope)
+def start_password_recovery(body: PasswordRecoveryStart, request: Request):
+    from cashly.services.account_security import start_recovery
+
+    return start_recovery(recovery_database(request), request.app.state.settings, body)
+
+
+@router.post("/password/reset/cancel", response_model=PasswordRecoveryCancelledEnvelope)
+def cancel_password_recovery(body: PasswordRecoveryProof, request: Request):
+    from cashly.services.account_security import cancel_recovery
+
+    return cancel_recovery(recovery_database(request), request.app.state.settings, body)
 
 
 def authority(request: Request) -> tuple[str, str]:
@@ -252,7 +299,7 @@ async def email_provider_action(request: Request, path: str, payload: dict) -> d
     if result.status_code >= 500:
         raise ApiError(503, "AUTH_UNAVAILABLE", "Layanan autentikasi belum tersedia.")
     if not result.is_success:
-        if path == "/resend":
+        if path.split("?", 1)[0] in {"/resend", "/recover"}:
             # Do not leak account existence through provider error details.
             return {}
         raise ApiError(400, "EMAIL_OTP_INVALID", "Kode tidak valid atau kedaluwarsa.")

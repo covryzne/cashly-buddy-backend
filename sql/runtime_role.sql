@@ -17,3 +17,5 @@ GRANT SELECT, INSERT ON cashly.game_events TO cashly_runtime;
 GRANT SELECT, INSERT, UPDATE ON cashly.game_states TO cashly_runtime;
 GRANT SELECT, INSERT ON cashly.streak_protections TO cashly_runtime;
 GRANT SELECT, INSERT, UPDATE ON cashly.account_security_challenges TO cashly_runtime;
+
+GRANT SELECT, INSERT, UPDATE ON cashly.password_recovery_sessions TO cashly_runtime;

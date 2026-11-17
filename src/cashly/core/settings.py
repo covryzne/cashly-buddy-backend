@@ -23,6 +23,7 @@ class Settings(BaseModel):
     migration_database_url: SecretStr | None = Field(default=None, repr=False)
     supabase_url: str | None = Field(default=None, repr=False)
     supabase_publishable_key: SecretStr | None = Field(default=None, repr=False)
+    supabase_secret_key: SecretStr | None = Field(default=None, repr=False)
     db_pool_size: int = Field(default=2, ge=1, le=20)
     db_max_overflow: int = Field(default=0, ge=0, le=20)
     db_pool_timeout: int = Field(default=10, ge=1, le=120)
@@ -94,6 +95,7 @@ class Settings(BaseModel):
                 migration_database_url=values.get("MIGRATION_DATABASE_URL") or None,
                 supabase_url=values.get("SUPABASE_URL") or None,
                 supabase_publishable_key=values.get("SUPABASE_PUBLISHABLE_KEY") or None,
+                supabase_secret_key=values.get("SUPABASE_SECRET_KEY") or None,
                 db_pool_size=values.get("DB_POOL_SIZE", "2"),
                 db_max_overflow=values.get("DB_MAX_OVERFLOW", "0"),
                 db_pool_timeout=values.get("DB_POOL_TIMEOUT", "10"),

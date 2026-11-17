@@ -1,7 +1,10 @@
+Permanent account deletion (ADR-0094): [setup and test guide](ACCOUNT_DELETION_SETUP.md).
+Requires migration `0006_account_deletion` and backend-only `SUPABASE_SECRET_KEY`.
+
 Profile/account and streak update (ADR-0083): [setup and test guide](PROFILE_ACCOUNT_SETUP.md).
 Apply 0004 before running the updated FE/BE against an existing DB. Includes
-persistent username/profile, Google optional Cashly password, two-address email
-confirmation, streak-only heroes and five monthly protections. No real staging
+persistent username/profile, Google optional Cashly password, read-only account
+email (ADR-0091), streak-only heroes and five monthly protections. No real staging
 migration or SMTP send was performed for this change.
 
 # cashly-buddy-backend
@@ -25,7 +28,7 @@ legacy DEV_SAMPLE_DATA is ignored for seeding (ADR-0072).
 
 ## Local data maintenance (ADR-0072)
 
-Local migration head: `0004_profile_protection`. Quantity/unit price and receipt-level
+Local migration head: `0006_account_deletion`. Quantity/unit price and receipt-level
 nominal discount/tax are persisted. Expense CRUD, game ledger and reports APIs are available.
 Auth creates empty accounts even when an old env has DEV_SAMPLE_DATA=true.
 Restart BE after updating code. Existing revision 0001 is retained unchanged.
@@ -119,6 +122,7 @@ Copy-Item .env.dev.example .env.dev
 The lock includes runtime and development tools with transitive pins; the build
 backend is pinned in `pyproject.toml`. No global Python packages are changed.
 Default local URL: `http://127.0.0.1:8000/api/v1/health`; Swagger: `/docs`.
+Swagger `/docs` and `/openapi.json` are available in dev/staging; disabled in prod.
 Do not commit filled env files. The agent must not read private env files; only
 examples and synthetic temporary test files may be inspected during this task.
 
@@ -386,3 +390,5 @@ unlocks. Today's milestone Freeze grant is reversed too; reset refuses if that
 would make inventory negative. Flag only enables the explicit reset script; it
 does not auto-reset on login or allow double XP. Staging/prod/hosted DBs are rejected.
 No migration required. One requested reset was applied locally for 2026-11-17.
+
+Email/account flow setup: [auth-email-flows.md](docs/auth-email-flows.md).

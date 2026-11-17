@@ -84,7 +84,9 @@ class Profile(Timestamps, Base):
 class AccountAuthLink(Base):
     __tablename__ = "account_auth_links"
     __table_args__ = (Index("ix_auth_links_account", "account_id"), {"schema": SCHEMA})
-    auth_user_id: Mapped[UUID] = mapped_column(ForeignKey("auth.users.id"), primary_key=True)
+    auth_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("auth.users.id", ondelete="CASCADE"), primary_key=True
+    )
     account_id: Mapped[UUID] = mapped_column(ForeignKey("cashly.accounts.id"))
     verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
@@ -247,6 +249,17 @@ class StreakProtection(Base):
     protected_date: Mapped[date] = mapped_column(Date, primary_key=True)
     quota_month: Mapped[date] = mapped_column(Date)
     used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PasswordRecoverySession(Base):
+    __tablename__ = "password_recovery_sessions"
+    __table_args__ = (Index("ix_recovery_identity", "auth_user_id"), {"schema": SCHEMA})
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    auth_user_id: Mapped[UUID] = mapped_column(Uuid)
+    email: Mapped[str] = mapped_column(String(254))
+    token_digest: Mapped[str] = mapped_column(String(64), unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AccountSecurityChallenge(Base):

@@ -51,27 +51,57 @@ def auth_postgres_settings(postgres_settings):
 
 
 @contextmanager
-def auth_authority(user_id):
+def auth_authority(user_id, *, fail_delete=False, email_identity=True, delete_user=None):
     calls = []
-    state = {"email": "tester@example.invalid", "new_email": None, "current": False, "new": False}
+    state = {
+        "email": "tester@example.invalid",
+        "used_hashes": set(),
+    }
+    state.update(google=True, password=False)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
 
+        def do_DELETE(self):
+            calls.append(self.path)
+            if self.path.startswith("/auth/v1/admin/users/"):
+                assert self.headers.get("apikey") == "sb_secret_synthetic"
+                assert self.headers.get("Authorization") == "Bearer sb_secret_synthetic"
+                if not fail_delete:
+                    assert self.path.endswith(str(user_id))
+                    try:
+                        delete_user(user_id)
+                    except Exception:
+                        self.send_response(500)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(b'{"msg":"private database failure"}')
+                        return
+                    state["deleted"] = True
+                self.send_response(503 if fail_delete else 200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"msg":"private admin details"}' if fail_delete else b"{}")
+                return
+            if not fail_delete:
+                state["google"] = False
+            self.send_response(503 if fail_delete else 200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"msg":"private provider details"}' if fail_delete else b"{}")
+
         def do_PUT(self):
             calls.append(self.path)
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
-            if body.get("email") == "taken@example.invalid":
+            if body.get("password") == "Old-Pass123!":
                 self.send_response(422)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(
-                    b'{"code":422,"error_code":"email_exists","msg":"private provider details"}'
-                )
+                self.wfile.write(b'{"error_code":"same_password"}')
                 return
-            if body.get("email"):
-                state.update(new_email=body["email"], current=False, new=False)
+            if body.get("password"):
+                state["password"] = True
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -84,29 +114,33 @@ def auth_authority(user_id):
                 self.end_headers()
                 return
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+            if self.path == "/auth/v1/verify" and body.get("token_hash") in state["used_hashes"]:
+                self.send_response(403)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"msg":"used link"}')
+                return
+            if self.path == "/auth/v1/verify" and body.get("token_hash") in {
+                "a" * 64,
+                "b" * 64,
+                "c" * 64,
+            }:
+                state["used_hashes"].add(body["token_hash"])
             if body.get("email") == "outage@example.invalid":
                 status, payload = 503, {}
             elif body.get("email") == "limited@example.invalid":
                 status, payload = 429, {}
-            elif self.path == "/auth/v1/recover":
-                status, payload = 200, {}
-            elif self.path == "/auth/v1/verify" and body.get("type") == "email_change":
-                if body.get("email") == state["email"] and body.get("token") == "111111":
-                    state["current"] = True
-                elif body.get("email") == state["new_email"] and body.get("token") == "222222":
-                    state["new"] = True
-                else:
-                    self.send_response(403)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(b'{"msg":"private OTP error"}')
-                    return
-                if state["current"] and state["new"]:
-                    state["email"] = state["new_email"]
-                    status, payload = 200, {"access_token": "email-only"}
-                else:
-                    status, payload = 200, {"msg": "Confirm the other email"}
-            elif self.path == "/auth/v1/verify" and body.get("token") != "123456":
+            elif self.path.split("?", 1)[0] == "/auth/v1/recover":
+                status, payload = (
+                    (404, {"msg": "unknown account"})
+                    if body.get("email") == "unknown@example.invalid"
+                    else (200, {})
+                )
+            elif (
+                self.path == "/auth/v1/verify"
+                and body.get("token") != "123456"
+                and body.get("token_hash") != "a" * 64
+            ):
                 status, payload = 403, {"msg": "private OTP details"}
             elif self.path == "/auth/v1/resend":
                 assert body["type"] == "signup"
@@ -121,7 +155,9 @@ def auth_authority(user_id):
                 status, payload = (
                     200,
                     {
-                        "access_token": "email-only",
+                        "access_token": "recovery-only"
+                        if self.path == "/auth/v1/verify" and body.get("type") == "recovery"
+                        else "email-only",
                         "refresh_token": "synthetic-refresh",
                         "expires_in": 3600,
                     },
@@ -134,9 +170,16 @@ def auth_authority(user_id):
         def do_GET(self):
             calls.append(self.path)
             token = self.headers.get("Authorization")
-            if token == "Bearer upstream-down":
+            if state.get("deleted"):
+                status, payload = 401, {}
+            elif token == "Bearer upstream-down":
                 status, payload = 503, {}
-            elif token in {"Bearer google-valid", "Bearer unverified", "Bearer email-only"}:
+            elif token in {
+                "Bearer google-valid",
+                "Bearer unverified",
+                "Bearer email-only",
+                "Bearer recovery-only",
+            }:
                 status, payload = (
                     200,
                     {
@@ -145,9 +188,26 @@ def auth_authority(user_id):
                         "email_confirmed_at": None
                         if token == "Bearer unverified"
                         else "2026-11-16T00:00:00Z",
-                        "identities": [
-                            {"provider": "email" if token == "Bearer email-only" else "google"}
-                        ],
+                        "identities": (
+                            [{"provider": "email"}]
+                            if token == "Bearer email-only"
+                            else (
+                                [
+                                    {
+                                        "provider": "google",
+                                        "identity_id": "10000000-0000-4000-8000-000000000010",
+                                        "identity_data": {"email": state["email"]},
+                                    }
+                                ]
+                                if state["google"]
+                                else []
+                            )
+                            + (
+                                [{"provider": "email"}]
+                                if state["password"] and email_identity
+                                else []
+                            )
+                        ),
                         "user_metadata": {"full_name": "Google Tester", "account_id": str(uuid4())},
                     },
                 )

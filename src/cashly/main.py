@@ -37,9 +37,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="Cashly Finance API",
         version="0.1.0",
         description="Google identity verification, account bootstrap and expense reads.",
-        docs_url="/docs" if settings.environment == "dev" else None,
+        docs_url="/docs" if settings.environment in {"dev", "staging"} else None,
         redoc_url=None,
-        openapi_url="/openapi.json" if settings.environment == "dev" else None,
+        openapi_url="/openapi.json" if settings.environment in {"dev", "staging"} else None,
         responses={422: {"model": ErrorEnvelope}},
         lifespan=lifespan,
     )

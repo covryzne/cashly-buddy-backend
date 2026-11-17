@@ -32,6 +32,7 @@ TABLES = (
     "game_states",
     "streak_protections",
     "account_security_challenges",
+    "password_recovery_sessions",
 )
 
 
@@ -78,7 +79,8 @@ def local_data(settings: Settings, action: str, *, confirm: str | None = None) -
                         "LOCK TABLE cashly.expense_items, cashly.expenses, "
                         "cashly.idempotency_records, cashly.game_events, "
                         "cashly.game_states, cashly.streak_protections, "
-                        "cashly.account_security_challenges IN EXCLUSIVE MODE"
+                        "cashly.account_security_challenges, "
+                        "cashly.password_recovery_sessions IN EXCLUSIVE MODE"
                     )
                 )
 
@@ -100,6 +102,7 @@ def local_data(settings: Settings, action: str, *, confirm: str | None = None) -
                     "game_states",
                     "streak_protections",
                     "account_security_challenges",
+                    "password_recovery_sessions",
                 ):
                     conn.execute(text(f"DELETE FROM cashly.{table}"))
             elif action == "seed-reference":
