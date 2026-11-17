@@ -43,7 +43,6 @@ def me(request: Request, response: Response, identity: VerifiedIdentity) -> Acco
     )
 
 
-@router.get("/expenses", response_model=ExpensesEnvelope)
 def expenses(request: Request, response: Response, identity: VerifiedIdentity) -> ExpensesEnvelope:
     response.headers["Cache-Control"] = "private, no-store"
     return accounts.expenses(database(request), identity)

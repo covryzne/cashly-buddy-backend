@@ -85,14 +85,14 @@ def main():
             )
             assert api.get("/api/v1/me", headers=headers).json()["data"]["email"] == email
             rows = api.get("/api/v1/expenses", headers=headers).json()["data"]
-            assert len(rows) == 6
+            assert rows == []
             accounts.append(account["account_id"])
             expenses.append({row["id"] for row in rows})
         assert accounts[0] != accounts[1]
         assert expenses[0].isdisjoint(expenses[1])
     print(
         "PASS: real local signup/password login, immediate activation, bootstrap retry, "
-        "six samples/account and account isolation"
+        "empty accounts (no automatic seeding) and distinct account identities"
     )
 
 

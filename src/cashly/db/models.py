@@ -1,6 +1,6 @@
 """Core storage only. Signup, restore, adjustment and reward behavior remains pending."""
 
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Column,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -97,6 +98,8 @@ class Expense(Timestamps, Base):
     __tablename__ = "expenses"
     __table_args__ = (
         CheckConstraint("amount_idr > 0", name="positive_amount"),
+        CheckConstraint("discount_idr >= 0", name="discount_amount"),
+        CheckConstraint("tax_idr >= 0", name="tax_amount"),
         CheckConstraint("char_length(btrim(description)) BETWEEN 1 AND 500", name="description"),
         CheckConstraint("source_item_index >= 0", name="source_item_index"),
         CheckConstraint("char_length(source_message_id) BETWEEN 1 AND 255", name="message_id"),
@@ -139,6 +142,9 @@ class Expense(Timestamps, Base):
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     account_id: Mapped[UUID] = mapped_column(ForeignKey("cashly.accounts.id"))
     amount_idr: Mapped[int] = mapped_column(BigInteger)
+    discount_idr: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    tax_idr: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    version: Mapped[int] = mapped_column(Integer, server_default="1")
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     category_code: Mapped[str] = mapped_column(ForeignKey("cashly.expense_categories.code"))
     description: Mapped[str] = mapped_column(String(500))
@@ -158,6 +164,11 @@ class ExpenseItem(Base):
         UniqueConstraint("expense_id", "item_index", name="uq_expense_items_position"),
         CheckConstraint("item_index >= 0", name="item_index"),
         CheckConstraint("amount_idr >= 0", name="line_amount"),
+        CheckConstraint("quantity > 0", name="quantity"),
+        CheckConstraint("unit_price_idr >= 0", name="unit_price"),
+        CheckConstraint(
+            "amount_idr = quantity::numeric * unit_price_idr::numeric", name="line_total"
+        ),
         CheckConstraint("char_length(btrim(label)) BETWEEN 1 AND 200", name="label"),
         {"schema": SCHEMA},
     )
@@ -165,6 +176,8 @@ class ExpenseItem(Base):
     expense_id: Mapped[UUID] = mapped_column(ForeignKey("cashly.expenses.id"))
     item_index: Mapped[int] = mapped_column(Integer)
     label: Mapped[str] = mapped_column(String(200))
+    quantity: Mapped[int] = mapped_column(Integer, server_default="1")
+    unit_price_idr: Mapped[int] = mapped_column(BigInteger)
     amount_idr: Mapped[int] = mapped_column(BigInteger)
 
 
@@ -185,3 +198,39 @@ class IdempotencyRecord(Base):
     response_status: Mapped[int] = mapped_column(Integer)
     response_body: Mapped[dict] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class GameEvent(Base):
+    __tablename__ = "game_events"
+    __table_args__ = (
+        UniqueConstraint("account_id", "event_key", name="uq_game_event_key"),
+        Index("ix_game_events_account_date", "account_id", "local_date"),
+        Index(
+            "uq_game_daily_checkin",
+            "account_id",
+            "local_date",
+            unique=True,
+            postgresql_where=text("kind = 'checkin'"),
+        ),
+        CheckConstraint("xp >= 0", name="xp"),
+        {"schema": SCHEMA},
+    )
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("cashly.accounts.id"))
+    event_key: Mapped[str] = mapped_column(String(128))
+    kind: Mapped[str] = mapped_column(String(24))
+    local_date: Mapped[date] = mapped_column(Date)
+    timezone: Mapped[str] = mapped_column(String(64))
+    xp: Mapped[int] = mapped_column(Integer, server_default="0")
+    freeze_delta: Mapped[int] = mapped_column(Integer, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class GameState(Base):
+    __tablename__ = "game_states"
+    __table_args__ = (
+        CheckConstraint("max_stage BETWEEN 0 AND 5", name="stage"),
+        {"schema": SCHEMA},
+    )
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("cashly.accounts.id"), primary_key=True)
+    max_stage: Mapped[int] = mapped_column(Integer, server_default="0")

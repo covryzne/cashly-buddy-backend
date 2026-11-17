@@ -1,75 +1,19 @@
-from datetime import UTC, datetime, timedelta
-from hashlib import sha256
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from cashly.core.auth import Identity
 from cashly.core.settings import Settings
-from cashly.db.connection import Database
-from cashly.db.models import Account, AccountAuthLink, Expense, IdempotencyRecord, Profile
+from cashly.db.connection import Database, database_url
+from cashly.db.models import Account, AccountAuthLink, Profile
 from cashly.repositories.accounts import (
     account_expenses,
     find_link,
     lock_identity,
     set_account_context,
 )
-from cashly.schemas.account import AccountData, ExpenseData, ExpensesEnvelope
-
-
-def sample_mode(settings: Settings) -> bool:
-    return settings.environment == "dev" and settings.dev_sample_data
-
-
-def seed_samples(session: Session, account: Account) -> None:
-    """Once per account, under identity lock. Never reseed deleted sample rows."""
-    marker = session.scalar(
-        select(IdempotencyRecord.id).where(
-            IdempotencyRecord.account_id == account.id,
-            IdempotencyRecord.operation == "dev_samples",
-            IdempotencyRecord.key == "sample-v1",
-        )
-    )
-    if marker:
-        return
-    now = datetime.now(UTC).replace(hour=5, minute=0, second=0, microsecond=0)
-    samples = [
-        ("Kopi Contoh", "Kopi dan roti contoh", "food_drink", 28000, "qris"),
-        ("Transport Contoh", "Perjalanan contoh", "transport", 18000, "e_wallet"),
-        ("Makan Contoh", "Makan siang contoh", "food_drink", 35000, "cash"),
-        ("Listrik Contoh", "Tagihan contoh", "bills", 150000, "bank_transfer"),
-        ("Hiburan Contoh", "Tiket contoh", "entertainment", 50000, "qris"),
-        ("Belanja Contoh", "Belanja contoh", "food_drink", 65000, "debit_card"),
-    ]
-    for index, (merchant, description, category, amount, payment) in enumerate(samples):
-        session.add(
-            Expense(
-                account_id=account.id,
-                merchant=merchant,
-                description=description,
-                category_code=category,
-                amount_idr=amount,
-                payment_method=payment,
-                occurred_at=now - timedelta(days=index),
-                source_platform="dashboard",
-                source_type="dashboard",
-                source_message_id=f"dev-sample-v1-{index}",
-                source_item_index=0,
-                timestamp_basis="user_explicit",
-            )
-        )
-    session.add(
-        IdempotencyRecord(
-            account_id=account.id,
-            operation="dev_samples",
-            key="sample-v1",
-            request_fingerprint=sha256(b"cashly-dev-sample-v1").hexdigest(),
-            response_status=200,
-            response_body={"sample_version": 1},
-        )
-    )
+from cashly.schemas.account import AccountData, ExpenseData, ExpensesEnvelope, RuntimeContext
 
 
 def load_account(session: Session, identity: Identity) -> tuple[Account, Profile]:
@@ -86,8 +30,22 @@ def load_account(session: Session, identity: Identity) -> tuple[Account, Profile
     return account, profile
 
 
+def runtime_context(settings: Settings) -> RuntimeContext | None:
+    if settings.database_url is None:
+        return None
+    local = database_url(settings.database_url).host in {"127.0.0.1", "localhost", "::1"}
+    return RuntimeContext(
+        environment="dev" if local else settings.environment,
+        database_kind="local" if local else "hosted",
+    )
+
+
 def account_data(
-    account: Account, profile: Profile, identity: Identity, sample: bool
+    account: Account,
+    profile: Profile,
+    identity: Identity,
+    sample: bool,
+    settings: Settings | None = None,
 ) -> AccountData:
     return AccountData(
         account_id=account.id,
@@ -97,6 +55,7 @@ def account_data(
         theme_preference=profile.theme_preference,
         joined_at=account.created_at,
         sample_data=sample,
+        runtime=runtime_context(settings) if settings else None,
     )
 
 
@@ -119,16 +78,14 @@ def bootstrap(db: Database, settings: Settings, identity: Identity) -> AccountDa
             )
             session.flush()
         account, profile = load_account(session, identity)
-        if sample_mode(settings):
-            seed_samples(session, account)
-        result = account_data(account, profile, identity, sample_mode(settings))
+        result = account_data(account, profile, identity, False, settings)
     return result
 
 
 def me(db: Database, settings: Settings, identity: Identity) -> AccountData:
     with db.transaction(auth_user_id=identity.user_id) as session:
         account, profile = load_account(session, identity)
-        return account_data(account, profile, identity, sample_mode(settings))
+        return account_data(account, profile, identity, False, settings)
 
 
 def expenses(db: Database, identity: Identity) -> ExpensesEnvelope:

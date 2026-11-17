@@ -13,3 +13,5 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
     cashly.expenses, cashly.expense_items, cashly.idempotency_records TO cashly_runtime;
 -- No CREATE, TRUNCATE, category writes or auth-schema access is granted.
 -- RLS trusts only transaction-local identity set by the verified backend.
+GRANT SELECT, INSERT ON cashly.game_events TO cashly_runtime;
+GRANT SELECT, INSERT, UPDATE ON cashly.game_states TO cashly_runtime;

@@ -9,6 +9,7 @@ __pycache__/
 build/
 dist/
 .env
+.cashly-dev-account.json
 .env.*
 !.env.*.example
 .coverage

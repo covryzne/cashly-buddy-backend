@@ -1,7 +1,13 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel
+
+
+class RuntimeContext(BaseModel):
+    environment: Literal["dev", "staging", "prod"]
+    database_kind: Literal["local", "hosted"]
 
 
 class AccountData(BaseModel):
@@ -12,6 +18,7 @@ class AccountData(BaseModel):
     theme_preference: str
     joined_at: datetime
     sample_data: bool
+    runtime: RuntimeContext | None = None
 
 
 class AccountEnvelope(BaseModel):

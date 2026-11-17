@@ -27,7 +27,10 @@ class Settings(BaseModel):
     db_max_overflow: int = Field(default=0, ge=0, le=20)
     db_pool_timeout: int = Field(default=10, ge=1, le=120)
     db_connect_timeout: int = Field(default=10, ge=1, le=60)
+    # Compatibility only: old env values no longer enable seeding in auth.
     dev_sample_data: bool = False
+    weekly_review_test_mode: bool = False
+    daily_checkin_test_mode: bool = False
 
     @field_validator("supabase_url")
     @classmethod
@@ -96,6 +99,8 @@ class Settings(BaseModel):
                 db_pool_timeout=values.get("DB_POOL_TIMEOUT", "10"),
                 db_connect_timeout=values.get("DB_CONNECT_TIMEOUT", "10"),
                 dev_sample_data=values.get("DEV_SAMPLE_DATA", "false"),
+                weekly_review_test_mode=values.get("WEEKLY_REVIEW_TEST_MODE", "false"),
+                daily_checkin_test_mode=values.get("DAILY_CHECKIN_TEST_MODE", "false"),
             )
         except (ValidationError, ValueError, TypeError):
             raise ConfigurationError(

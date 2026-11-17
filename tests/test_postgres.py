@@ -39,7 +39,7 @@ def test_real_postgres_migration_constraints_rls_and_rollback(postgres_settings)
                 conn.scalar(
                     text("SELECT count(*) FROM pg_tables WHERE schemaname='cashly' AND rowsecurity")
                 )
-                == 8
+                == 10
             )
             assert conn.scalar(text("SELECT to_regclass('public.unrelated_sentinel') IS NOT NULL"))
             # Only this disposable cluster has test auth rows and a custom runtime group.
@@ -121,10 +121,18 @@ def test_real_postgres_migration_constraints_rls_and_rollback(postgres_settings)
                 session.add_all(
                     [
                         ExpenseItem(
-                            expense_id=expense_id, item_index=0, label="Kopi", amount_idr=15000
+                            expense_id=expense_id,
+                            item_index=0,
+                            label="Kopi",
+                            amount_idr=15000,
+                            unit_price_idr=15000,
                         ),
                         ExpenseItem(
-                            expense_id=expense_id, item_index=1, label="Roti", amount_idr=10000
+                            expense_id=expense_id,
+                            item_index=1,
+                            label="Roti",
+                            amount_idr=10000,
+                            unit_price_idr=10000,
                         ),
                     ]
                 )

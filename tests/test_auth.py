@@ -7,7 +7,8 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from uuid import uuid4
+from unittest.mock import patch
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -177,7 +178,7 @@ def test_http_auth_and_account_reads(auth_postgres_settings):
                 first = client.post("/api/v1/auth/bootstrap", headers=headers)
                 assert first.status_code == 200, first.text
                 assert first.json()["data"]["display_name"] == "Google Tester"
-                assert first.json()["data"]["sample_data"] is True
+                assert first.json()["data"]["sample_data"] is False
                 assert client.post("/api/v1/auth/bootstrap", headers=headers).json() == first.json()
                 assert (
                     client.post(
@@ -187,9 +188,33 @@ def test_http_auth_and_account_reads(auth_postgres_settings):
                 )
                 assert client.get("/api/v1/me", headers=headers).json() == first.json()
                 records = client.get("/api/v1/expenses", headers=headers).json()
-                assert len(records["data"]) == 6
+                assert len(records["data"]) == 0
                 assert not records["has_more"]
                 assert all(isinstance(row["amount_idr"], str) for row in records["data"])
+                daily_headers = {**headers, "Idempotency-Key": str(uuid4())}
+                checked = client.post("/api/v1/gamification/checkins/review", headers=daily_headers)
+                assert checked.status_code == 200, checked.text
+                day_data = checked.json()["data"]
+                assert day_data["today_checked_in"] and day_data["total_xp"] == 10
+                assert (
+                    next(
+                        day
+                        for day in day_data["calendar"]
+                        if day["date"] == day_data["today_local_date"]
+                    )["status"]
+                    == "active"
+                )
+                assert (
+                    client.post(
+                        "/api/v1/gamification/checkins/review", headers=daily_headers
+                    ).json()
+                    == checked.json()
+                )
+                duplicate = client.post(
+                    "/api/v1/gamification/checkins/review",
+                    headers={**headers, "Idempotency-Key": str(uuid4())},
+                )
+                assert duplicate.json()["data"]["total_xp"] == 10
                 assert set(calls) == {"/auth/v1/user"}
             finally:
                 db.dispose()
@@ -232,7 +257,7 @@ def test_bootstrap_concurrency_isolation_and_production_seed_guard(auth_postgres
         with ThreadPoolExecutor(max_workers=4) as pool:
             accounts = list(pool.map(lambda _: bootstrap(db, settings, identities[0]), range(4)))
         assert len({account.account_id for account in accounts}) == 1
-        assert len(expenses(db, identities[0]).data) == 6
+        assert len(expenses(db, identities[0]).data) == 0
         second = bootstrap(db, settings, identities[1])
         assert second.account_id != accounts[0].account_id
         first_ids = {row.id for row in expenses(db, identities[0]).data}
@@ -333,3 +358,464 @@ def test_auth_configuration_never_returns_secret_or_service_role_keys():
             response = client.get("/api/v1/auth/configuration")
             assert response.status_code == 503
             assert key not in response.text
+
+
+def test_details_upgrade_and_transactional_local_cleanup(auth_postgres_settings):
+    from alembic import command
+    from sqlalchemy.exc import IntegrityError
+
+    from cashly.db.commands import alembic_config
+    from cashly.db.local_data import local_data
+
+    settings = auth_postgres_settings
+    command.upgrade(alembic_config(settings), "0001_core")
+    engine = build_engine(settings, migration=True)
+    account_id, auth_id, expense_id = (uuid4() for _ in range(3))
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("INSERT INTO auth.users(id) VALUES (:id)"), {"id": auth_id})
+            conn.execute(text("INSERT INTO cashly.accounts(id) VALUES (:id)"), {"id": account_id})
+            conn.execute(
+                text(
+                    "INSERT INTO cashly.profiles(account_id,display_name) "
+                    "VALUES (:id,'Local Tester')"
+                ),
+                {"id": account_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO cashly.account_auth_links(auth_user_id,account_id,verified_at) "
+                    "VALUES (:auth,:account,now())"
+                ),
+                {"auth": auth_id, "account": account_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO cashly.expenses(id,account_id,amount_idr,"
+                    "occurred_at,category_code,"
+                    "description,source_platform,source_type,source_message_id,timestamp_basis) "
+                    "VALUES (:id,:account,25000,now(),'food_drink','Fixture','dashboard',"
+                    "'dashboard','fixture-source','user_explicit')"
+                ),
+                {"id": expense_id, "account": account_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO cashly.expense_items(id,expense_id,item_index,label,amount_idr) "
+                    "VALUES (:id,:expense,0,'Legacy line',25000)"
+                ),
+                {"id": uuid4(), "expense": expense_id},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO cashly.idempotency_records(id,account_id,operation,key,"
+                    "request_fingerprint,response_status,response_body) "
+                    "VALUES (:id,:account,'dev_samples','sample-v1',:hash,200,'{}')"
+                ),
+                {"id": uuid4(), "account": account_id, "hash": "a" * 64},
+            )
+        upgrade_database(settings)
+        with engine.connect() as conn:
+            assert tuple(
+                conn.execute(
+                    text("SELECT quantity,unit_price_idr,amount_idr FROM cashly.expense_items")
+                ).one()
+            ) == (1, 25000, 25000)
+            assert tuple(
+                conn.execute(
+                    text("SELECT discount_idr,tax_idr,amount_idr FROM cashly.expenses")
+                ).one()
+            ) == (0, 0, 25000)
+        # Real constraints reject invalid item arithmetic, quantity and adjustments.
+        for query in (
+            "UPDATE cashly.expense_items SET quantity=0",
+            "UPDATE cashly.expense_items SET unit_price_idr=-1",
+            "UPDATE cashly.expense_items SET quantity=2",
+            "UPDATE cashly.expenses SET discount_idr=-1",
+            "UPDATE cashly.expenses SET tax_idr=-1",
+        ):
+            with pytest.raises(IntegrityError), engine.begin() as conn:
+                conn.execute(text(query))
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE cashly.expense_items SET quantity=5,unit_price_idr=5000"))
+            conn.execute(text("UPDATE cashly.expenses SET discount_idr=2000,tax_idr=1000"))
+        # Round-trip downgrade preserves totals and upgrade backfills legacy details.
+        command.downgrade(alembic_config(settings), "0001_core")
+        upgrade_database(settings)
+        # Only this test bypasses the fixed port guard: its database is disposable
+        # on a random port. Production script always enforces loopback:54322.
+        with patch("cashly.db.local_data.verify_local_target"):
+            first = local_data(settings, "seed-reference")
+            assert first["after"]["expense_categories"] == 9
+            assert local_data(settings, "seed-reference")["after"] == first["after"]
+            # Failure after item deletion must roll back every deletion.
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "CREATE FUNCTION cashly.block_cleanup() RETURNS trigger LANGUAGE plpgsql "
+                        "AS $$ BEGIN RAISE EXCEPTION 'fixture failure'; END $$"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE TRIGGER fixture_block BEFORE DELETE ON cashly.expenses "
+                        "FOR EACH ROW EXECUTE FUNCTION cashly.block_cleanup()"
+                    )
+                )
+            from cashly.core.environment import ConfigurationError
+
+            with pytest.raises(ConfigurationError, match="rolled back"):
+                local_data(settings, "reset", confirm="cashly-local-transactions")
+            assert local_data(settings, "inspect")["after"] == first["after"]
+            with engine.begin() as conn:
+                conn.execute(text("DROP TRIGGER fixture_block ON cashly.expenses"))
+                conn.execute(text("DROP FUNCTION cashly.block_cleanup()"))
+            result = local_data(settings, "reset", confirm="cashly-local-transactions")
+            for table in ("expenses", "expense_items", "idempotency_records"):
+                assert result["after"][table] == 0
+            for table in ("accounts", "profiles", "account_auth_links", "auth_users"):
+                assert result["after"][table] == result["before"][table] == 1
+            assert result["after"]["expense_categories"] == 9
+            assert (
+                local_data(settings, "reset", confirm="cashly-local-transactions")["after"]
+                == result["after"]
+            )
+    finally:
+        engine.dispose()
+
+
+def test_finance_api_crud_rewards_replay_and_ownership(auth_postgres_settings):
+    from cashly.core.errors import ApiError
+    from cashly.services import finance
+
+    identities = [
+        Identity(uuid4(), f"crud{i}@example.invalid", "CRUD Tester", datetime.now(UTC))
+        for i in range(2)
+    ]
+    prepare(auth_postgres_settings, identities)
+    with auth_authority(identities[0].user_id) as (authority, _):
+        settings = auth_postgres_settings.model_copy(
+            update={
+                "weekly_review_test_mode": True,
+                "supabase_url": authority,
+                "supabase_publishable_key": SecretStr("synthetic-key"),
+            }
+        )
+        db = runtime_database(settings)
+        bootstrap(db, settings, identities[0])
+        bootstrap(db, settings, identities[1])
+        try:
+            with TestClient(create_app(settings)) as api:
+                original = api.app.state.database
+                api.app.state.database = db
+                try:
+                    headers = {
+                        "Authorization": "Bearer google-valid",
+                        "Idempotency-Key": str(uuid4()),
+                    }
+                    body = {
+                        "merchant": "CRUD QA",
+                        "description": "Two coffees",
+                        "category_code": "food_drink",
+                        "occurred_at": datetime.now(UTC).isoformat(),
+                        "payment_method": "qris",
+                        "amount_idr": "29000",
+                        "discount_idr": "2000",
+                        "tax_idr": "1000",
+                        "items": [{"label": "Coffee", "quantity": 2, "unit_price_idr": "15000"}],
+                    }
+                    assert api.post("/api/v1/expenses", json=body).status_code == 401
+                    created = api.post("/api/v1/expenses", json=body, headers=headers)
+                    assert created.status_code == 201, created.text
+                    record = created.json()["data"]
+                    identifier = record["id"]
+                    assert record["items"][0]["quantity"] == 2
+                    assert (
+                        api.post("/api/v1/expenses", json=body, headers=headers).json()
+                        == created.json()
+                    )
+                    changed = {**body, "merchant": "Different"}
+                    assert (
+                        api.post("/api/v1/expenses", json=changed, headers=headers).status_code
+                        == 409
+                    )
+                    game = api.get("/api/v1/gamification/overview", headers=headers).json()["data"]
+                    assert game["total_xp"] == 60 and game["current_streak"] == 1
+                    assert game["max_mascot_stage_unlocked"] == 0
+                    assert (
+                        api.get(f"/api/v1/expenses/{identifier}", headers=headers).status_code
+                        == 200
+                    )
+                    other = finance.list_expenses(db, identities[1])
+                    assert other["data"] == []
+                    with pytest.raises(ApiError) as denied:
+                        finance.detail(db, identities[1], UUID(identifier))
+                    assert denied.value.status_code == 404
+                    edits = {**body, "merchant": "Edited QA", "version": 1}
+                    edit_headers = {**headers, "Idempotency-Key": str(uuid4())}
+                    updated = api.patch(
+                        f"/api/v1/expenses/{identifier}", json=edits, headers=edit_headers
+                    )
+                    assert updated.status_code == 200, updated.text
+                    assert updated.json()["data"]["version"] == 2
+                    assert (
+                        api.patch(
+                            f"/api/v1/expenses/{identifier}",
+                            json=edits,
+                            headers={**headers, "Idempotency-Key": str(uuid4())},
+                        ).status_code
+                        == 409
+                    )
+                    summary = api.get("/api/v1/reports/summary", headers=headers).json()["data"]
+                    assert summary["amount_idr"] == "29000" and summary["count"] == 1
+                    assert (
+                        api.post(
+                            "/api/v1/gamification/checkins/no-spend", headers=headers
+                        ).status_code
+                        == 409
+                    )
+                    review = api.post("/api/v1/reports/weekly-story/complete", headers=headers)
+                    assert review.status_code == 200, review.text
+                    assert review.json()["data"]["total_xp"] == 100
+                    assert (
+                        api.post("/api/v1/reports/weekly-story/complete", headers=headers).json()
+                        == review.json()
+                    )
+                    deleted = api.delete(
+                        f"/api/v1/expenses/{identifier}?version=2", headers=headers
+                    )
+                    assert deleted.status_code == 200, deleted.text
+                    assert api.get("/api/v1/expenses", headers=headers).json()["data"] == []
+                    assert (
+                        api.get("/api/v1/reports/summary", headers=headers).json()["data"][
+                            "amount_idr"
+                        ]
+                        == "0"
+                    )
+                    restored = api.post(f"/api/v1/expenses/{identifier}/restore", headers=headers)
+                    assert restored.status_code == 200, restored.text
+                    assert restored.json()["data"]["items"][0]["unit_price_idr"] == "15000"
+                    assert (
+                        api.get("/api/v1/gamification/overview", headers=headers).json()["data"][
+                            "total_xp"
+                        ]
+                        == 100
+                    )
+                    invalid = {**body, "amount_idr": "1"}
+                    assert (
+                        api.post("/api/v1/expenses", json=invalid, headers=headers).status_code
+                        == 422
+                    )
+                    assert (
+                        api.get("/api/v1/expenses?cursor=malformed", headers=headers).status_code
+                        == 422
+                    )
+                finally:
+                    api.app.state.database = original
+        finally:
+            db.dispose()
+
+
+def test_seed_scenario_repeat_and_manual_freeze(auth_postgres_settings):
+    import runpy
+    from datetime import timedelta
+
+    from cashly.services import finance, gamification
+
+    identity = Identity(uuid4(), "seed@example.invalid", "Seed Tester", datetime.now(UTC))
+    settings = auth_postgres_settings
+    prepare(settings, [identity])
+    db = runtime_database(settings)
+    try:
+        account = bootstrap(db, settings, identity)
+        seed = runpy.run_path(str(Path("scripts/seed_development.py")))["seed_scenario"]
+        result = seed(db, identity)
+        assert result["gamification"]["total_xp"] == 170
+        assert result["gamification"]["current_streak"] == 12
+        assert result["gamification"]["level"] == 2
+        assert result["gamification"]["max_mascot_stage_unlocked"] == 1
+        assert result["gamification"]["freeze_balance"] == 1
+        assert seed(db, identity)["already_seeded"]
+        # Exercise the explicit dev-only review reset on this disposable account.
+        from cashly.services.accounts import load_account
+        from cashly.services.gamification import record, today
+
+        day = today("Asia/Jakarta")
+        with db.transaction(auth_user_id=identity.user_id) as session:
+            load_account(session, identity)
+            record(
+                session,
+                account.account_id,
+                "Asia/Jakarta",
+                f"weekly:{day - timedelta(days=day.weekday())}",
+                "weekly_review",
+                day,
+                xp=40,
+            )
+        admin = build_engine(settings, migration=True)
+        try:
+            with admin.begin() as conn:
+                conn.execute(text("ALTER TABLE auth.users ADD COLUMN email text"))
+                conn.execute(
+                    text("UPDATE auth.users SET email=:email WHERE id=:id"),
+                    {"email": identity.email, "id": identity.user_id},
+                )
+            reset = runpy.run_path(str(Path("scripts/reset_weekly_review.py")))["reset_weekly"]
+            # Fixed-port guard is bypassed only for this disposable random-port DB.
+            reset.__globals__["verify_local_target"] = lambda _: None
+            assert reset(settings, identity.email)["weekly_reviews_reset"] == 1
+            assert reset(settings, identity.email)["weekly_reviews_reset"] == 0
+            with db.transaction(auth_user_id=identity.user_id) as session:
+                load_account(session, identity)
+                assert (
+                    gamification.overview(session, account.account_id, "Asia/Jakarta")["total_xp"]
+                    == 170
+                )
+        finally:
+            admin.dispose()
+        reset_daily = runpy.run_path(str(Path("scripts/reset_daily_checkin.py")))["reset_daily"]
+        reset_daily.__globals__["verify_local_target"] = lambda _: None
+        from cashly.core.environment import ConfigurationError
+
+        with pytest.raises(ConfigurationError, match="DAILY_CHECKIN_TEST_MODE"):
+            reset_daily(settings, identity.email)
+        daily_settings = settings.model_copy(update={"daily_checkin_test_mode": True})
+        before_rows = len(finance.list_expenses(db, identity)["data"])
+        assert reset_daily(daily_settings, identity.email)["daily_checkins_reset"] == 1
+        assert reset_daily(daily_settings, identity.email)["daily_checkins_reset"] == 0
+        with db.transaction(auth_user_id=identity.user_id) as session:
+            finance.locked_account(session, identity)
+            after = gamification.overview(session, account.account_id, "Asia/Jakarta")
+            assert not after["today_checked_in"] and after["total_xp"] == 160
+            assert after["max_mascot_stage_unlocked"] == 1
+            gamification.action(session, account.account_id, "Asia/Jakarta", "review")
+            assert (
+                gamification.overview(session, account.account_id, "Asia/Jakarta")["total_xp"]
+                == 170
+            )
+        assert len(finance.list_expenses(db, identity)["data"]) == before_rows
+        rows = finance.list_expenses(db, identity, limit=5)
+        assert len(rows["data"]) == 5 and rows["has_more"]
+        second = finance.list_expenses(db, identity, limit=5, cursor=rows["next_cursor"])
+        assert not {r["id"] for r in rows["data"]}.intersection(r["id"] for r in second["data"])
+        first = UUID(rows["data"][0]["id"])
+        finance.mutate(db, identity, "delete", str(uuid4()), identifier=first)
+        seed(db, identity)
+        assert len(finance.list_expenses(db, identity)["data"]) == 15
+        # Create a recoverable gap through yesterday in this disposable DB only.
+        engine = build_engine(settings, migration=True)
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("DELETE FROM cashly.game_events WHERE account_id=:id"),
+                    {"id": account.account_id},
+                )
+            day = gamification.today("Asia/Jakarta")
+            with db.transaction(auth_user_id=identity.user_id) as session:
+                finance.locked_account(session, identity)
+                for offset in reversed(range(2, 16)):
+                    gamification.checkin(
+                        session, account.account_id, "Asia/Jakarta", day - timedelta(days=offset)
+                    )
+                before = gamification.overview(session, account.account_id, "Asia/Jakarta")
+                assert before["freeze_balance"] == 2 and before["recovery"]
+                restored = gamification.action(
+                    session, account.account_id, "Asia/Jakarta", "freeze", day - timedelta(days=1)
+                )
+                assert restored["freeze_balance"] == 1 and restored["total_xp"] == 140
+                assert restored["current_streak"] == 14
+                again = gamification.action(
+                    session, account.account_id, "Asia/Jakarta", "freeze", day - timedelta(days=1)
+                )
+                assert again == restored
+                assert restored["max_mascot_stage_unlocked"] == 1
+        finally:
+            engine.dispose()
+    finally:
+        db.dispose()
+
+
+def test_calendar_is_current_local_week_monday_to_sunday(auth_postgres_settings):
+    from datetime import date
+
+    from cashly.services import finance, gamification
+
+    identity = Identity(uuid4(), "week@example.invalid", "Week Tester", datetime.now(UTC))
+    prepare(auth_postgres_settings, [identity])
+    db = runtime_database(auth_postgres_settings)
+    try:
+        account = bootstrap(db, auth_postgres_settings, identity)
+        with db.transaction(auth_user_id=identity.user_id) as session:
+            finance.locked_account(session, identity)
+            wednesday = date(2026, 11, 18)
+            before = gamification.overview(session, account.account_id, "Asia/Jakarta", wednesday)
+            assert before["calendar"][0]["date"] == "2026-11-16"
+            assert before["calendar"][-1]["date"] == "2026-11-22"
+            assert [d["status"] for d in before["calendar"]] == ["missed"] * 3 + ["upcoming"] * 4
+            assert not before["today_checked_in"]
+            gamification.checkin(session, account.account_id, "Asia/Jakarta", wednesday)
+            after = gamification.overview(session, account.account_id, "Asia/Jakarta", wednesday)
+            assert after["today_checked_in"] and after["calendar"][2]["status"] == "active"
+            assert after["today_local_date"] == "2026-11-18"
+            assert after["timezone"] == "Asia/Jakarta"
+            gamification.checkin(session, account.account_id, "Asia/Jakarta", wednesday)
+            assert (
+                gamification.overview(session, account.account_id, "Asia/Jakarta", wednesday)[
+                    "total_xp"
+                ]
+                == 10
+            )
+            next_week = gamification.overview(
+                session, account.account_id, "Asia/Jakarta", date(2026, 11, 23)
+            )
+            assert next_week["calendar"][0]["date"] == "2026-11-23"
+            assert next_week["calendar"][-1]["date"] == "2026-11-29"
+    finally:
+        db.dispose()
+
+
+def test_weekend_review_policy_and_local_test_override(auth_postgres_settings):
+    from datetime import date
+
+    from cashly.core.errors import ApiError
+    from cashly.services import finance, gamification
+
+    identity = Identity(uuid4(), "weekend@example.invalid", "Weekend Tester", datetime.now(UTC))
+    prepare(auth_postgres_settings, [identity])
+    db = runtime_database(auth_postgres_settings)
+    try:
+        account = bootstrap(db, auth_postgres_settings, identity)
+        with db.transaction(auth_user_id=identity.user_id) as session:
+            finance.locked_account(session, identity)
+            for day, allowed in [
+                (date(2026, 11, 20), False),
+                (date(2026, 11, 21), True),
+                (date(2026, 11, 22), True),
+                (date(2026, 11, 23), False),
+            ]:
+                result = gamification.overview(session, account.account_id, "Asia/Jakarta", day)
+                weekly = result["missions"][1]
+                assert weekly["can_complete"] is allowed
+                assert weekly["test_override"] is False
+            monday = date(2026, 11, 16)
+            with patch("cashly.services.gamification.today", return_value=monday):
+                with pytest.raises(ApiError) as blocked:
+                    gamification.action(session, account.account_id, "Asia/Jakarta", "weekly")
+                assert blocked.value.code == "WEEKLY_REVIEW_NOT_AVAILABLE"
+                settings = auth_postgres_settings.model_copy(
+                    update={"weekly_review_test_mode": True}
+                )
+                enabled = gamification.overview(
+                    session, account.account_id, "Asia/Jakarta", monday, settings
+                )
+                assert (
+                    enabled["missions"][1]["can_complete"]
+                    and enabled["missions"][1]["test_override"]
+                )
+                with pytest.raises(ApiError) as empty:
+                    gamification.action(
+                        session, account.account_id, "Asia/Jakarta", "weekly", settings=settings
+                    )
+                assert empty.value.code == "REVIEW_EMPTY"
+    finally:
+        db.dispose()

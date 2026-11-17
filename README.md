@@ -14,8 +14,72 @@ implemented (ADR-0068); hosted email/SMTP and finance writes remain deferred.
 Remote Supabase has not been
 inspected or migrated by the agent. Design source: `../specs/README.md`, ADR-0062,
 ADR-0063, ADR-0064 and ADR-0066. Operator setup:
-`../cashly-buddy-frontend/GOOGLE_OAUTH_SETUP.md`. `DEV_SAMPLE_DATA=true`
-seeds fictional expenses once per account in dev only, during authenticated bootstrap.
+`../cashly-buddy-frontend/GOOGLE_OAUTH_SETUP.md`. Auth never seeds expenses;
+legacy DEV_SAMPLE_DATA is ignored for seeding (ADR-0072).
+
+## Local data maintenance (ADR-0072)
+
+Local migration head: `0003_game_and_crud`. Quantity/unit price and receipt-level
+nominal discount/tax are persisted. Expense CRUD, game ledger and reports APIs are available.
+Auth creates empty accounts even when an old env has DEV_SAMPLE_DATA=true.
+Restart BE after updating code. Existing revision 0001 is retained unchanged.
+
+From the BE root, using your activated Conda cashly environment:
+
+```cmd
+python -m cashly db-upgrade
+python -m cashly db-check
+python scripts/manage_local_data.py --help
+python scripts/manage_local_data.py inspect
+python scripts/manage_local_data.py seed-reference
+```
+
+The reference seed adds missing built-in categories only; it creates no accounts
+or expenses. These scripts accept only dev + loopback Auth:54321 and DB:54322/postgres.
+For an explicit local transaction reset (deletes ALL local expenses, their items
+idempotency records and game progress, preserving accounts/profiles/Auth/categories):
+
+```cmd
+python scripts/manage_local_data.py reset --confirm cashly-local-transactions
+```
+
+Reset is not part of a migration or seeder; repeated seed never deletes test edits.
+Dedicated local account and scenario:
+
+```cmd
+python scripts/seed_development.py --help
+python scripts/seed_development.py
+```
+
+This creates/reuses one local login, 16 fictional transactions with item details,
+170 XP (level 2), 12 active streak days, mascot stage 1 and 1 Freeze. Credentials
+are saved only in the gitignored `.cashly-dev-account.json` in this backend root;
+open that file locally for the email/password and use the normal FE login form.
+Optional DEV_SEED_EMAIL/DEV_SEED_PASSWORD process variables apply on first run.
+Do not delete the credentials file if you want to reuse the generated password.
+
+Rerunning seed preserves edits/deletions, does not change the password and does not
+create another account. It is local-only; it does not reset other accounts.
+Do not use manage_local_data reset as a seed refresh: that command explicitly
+clears ALL local transaction/game data. Stop/restart BE/FE after updating code.
+
+Test from FE: login -> Aktivitas -> separate Form manual button -> save -> detail ->
+Ubah detail -> delete -> Undo within 30 seconds. Reload verifies DB persistence.
+Beranda/Profil show server XP/streak; mission/check-in/weekly review/freeze actions
+are served by the backend. OCR/VN/chat/WhatsApp processing stays deferred.
+Profile name can be saved; avatar/username/bio persistence is deferred and disabled.
+
+Repeatable real local browser verification (uses existing seed account):
+
+```cmd
+python scripts/verify_seed_browser.py
+```
+
+This uses temporary FE/BE ports and a production FE build; it creates a QA expense,
+exercises edit/delete/restore, then soft-deletes that QA expense. Seed fixture rows
+are preserved. This is separate from mocked-provider auth browser tests.
+Downgrade to 0001 preserves expense/line totals but loses the new detail fields;
+never use downgrade as an Undo for deleted data.
 
 ## Conda quickstart (CMD)
 
@@ -239,3 +303,65 @@ temporary local PostgreSQL server on a random loopback port; otherwise they skip
 with a reason. Auth tables/roles in that cluster are test stubs, not a live
 Supabase instance. No remote service calls are made. Before implementing disputed feature
 behavior, review `../specs/BACKEND_DESIGN_REVIEW.md` with the user.
+
+
+Quick-add correction: Catat Pengeluaran and the central + always open the original
+OCR/Scan, voice-note and chat chooser on every page. The temporary manual CRUD
+form is a separate button on Aktivitas, outside that chooser. Existing prototype
+extraction flows stay available until their backend integration is implemented.
+
+
+ADR-0074: /me and auth account responses include sanitized runtime environment
+metadata. Loopback DB displays Development; hosted DB displays the selected BE
+environment (staging/prod/dev), never an inferred browser-host environment. No
+DB migration is needed. Weekly check-in is Monday-Sunday and lives in the streak
+card. Focus/resume verifies the session in the background, not full-page reload.
+Restart the backend/frontend to load the updated response/UI code.
+
+
+## Weekly review on weekends (ADR-0076)
+
+Completion is allowed Saturday/Sunday in the profile timezone. To test on weekdays,
+set WEEKLY_REVIEW_TEST_MODE=true in your private backend .env.dev, restart BE and
+refresh FE. This flag works only for dev + loopback database; staging/prod cannot
+bypass the weekend rule. The UI labels the active test override. Reading a story
+remains available daily. Once-per-week reward and expense requirements still apply.
+
+If the seeded account already completed this week's review, explicitly reset just
+that review before testing it again:
+
+```cmd
+python scripts/reset_weekly_review.py --confirm reset-current-week
+```
+
+This removes this week's review reward (40 XP) and its replay records for the one
+seeded local account. It preserves expenses, daily check-ins, other XP and freeze.
+No reset was run on the operator's account during implementation. Turn the test
+flag off afterwards to test the real weekend eligibility state. No migration needed.
+
+
+## Daily check-in testing (ADR-0078)
+
+The flame on today's date is the daily check-in button. Other dates are read-only.
+The API derives today's date from the account timezone; completed/pending/offline
+states prevent repeated clicks. Weekly completion is compact and centered.
+
+To explicitly reset today's check-in on the seeded LOCAL dev account, set this
+in backend .env.dev (not frontend):
+
+```dotenv
+DAILY_CHECKIN_TEST_MODE=true
+```
+
+Then, from BE:
+
+```cmd
+python scripts/reset_daily_checkin.py --confirm reset-today
+```
+
+Refresh FE and click today's flame. Reset removes today's 10 XP and daily replay
+records; preserves transactions, weekly review, other days and permanent mascot
+unlocks. Today's milestone Freeze grant is reversed too; reset refuses if that
+would make inventory negative. Flag only enables the explicit reset script; it
+does not auto-reset on login or allow double XP. Staging/prod/hosted DBs are rejected.
+No migration required. One requested reset was applied locally for 2026-11-17.
