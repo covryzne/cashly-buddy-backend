@@ -119,6 +119,8 @@ def test_runtime_openapi_does_not_claim_unimplemented_endpoints(app):
         "/api/v1/auth/bootstrap",
         "/api/v1/auth/register",
         "/api/v1/auth/login",
+        "/api/v1/auth/email/verify",
+        "/api/v1/auth/email/resend",
         "/api/v1/auth/configuration",
         "/api/v1/me",
         "/api/v1/expenses",

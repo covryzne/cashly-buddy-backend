@@ -64,6 +64,27 @@ class RegisterRequest(LoginRequest):
         return value
 
 
+class EmailVerificationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: str = Field(min_length=3, max_length=254, pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def trim_email(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class VerifyEmailRequest(EmailVerificationRequest):
+    token: SecretStr = Field(min_length=6, max_length=6)
+
+    @field_validator("token")
+    @classmethod
+    def digits_only(cls, value):
+        if not all(char in "0123456789" for char in value.get_secret_value()):
+            raise ValueError("OTP must contain six digits")
+        return value
+
+
 class AuthSession(BaseModel):
     access_token: str = Field(repr=False)
     refresh_token: str = Field(repr=False)

@@ -18,6 +18,7 @@ from sqlalchemy import event, text
 from sqlalchemy.engine import make_url
 
 from cashly.core.auth import Identity
+from cashly.core.settings import Settings
 from cashly.db.commands import upgrade_database
 from cashly.db.connection import Database, build_engine
 from cashly.main import create_app
@@ -68,6 +69,13 @@ def auth_authority(user_id):
                 status, payload = 503, {}
             elif body.get("email") == "limited@example.invalid":
                 status, payload = 429, {}
+            elif self.path == "/auth/v1/verify" and body.get("token") != "123456":
+                status, payload = 403, {"msg": "private OTP details"}
+            elif self.path == "/auth/v1/resend":
+                assert body["type"] == "signup"
+                status, payload = 200, {}
+            elif body.get("email") == "unconfirmed@example.invalid":
+                status, payload = 400, {"code": "email_not_confirmed"}
             elif body.get("password") == "Wrong-Pass999!":
                 status, payload = 400, {"msg": "private provider details"}
             elif body.get("email") == "confirm@example.invalid":
@@ -122,6 +130,82 @@ def auth_authority(user_id):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_email_otp_errors_and_no_implicit_session():
+    with auth_authority(uuid4()) as (url, calls):
+        settings = Settings(
+            environment="dev", supabase_url=url, supabase_publishable_key=SecretStr("synthetic-key")
+        )
+        with TestClient(create_app(settings)) as client:
+            for path in ("verify", "resend"):
+                response = client.post(f"/api/v1/auth/email/{path}", json={"email": "bad"})
+                assert response.status_code == 422
+            assert not calls
+            for token in ("12345", "abcdef", "１２３４５６"):
+                response = client.post(
+                    "/api/v1/auth/email/verify",
+                    json={
+                        "email": "tester@example.invalid",
+                        "token": token,
+                    },
+                )
+                assert response.status_code == 422
+                assert token not in response.text
+            wrong = client.post(
+                "/api/v1/auth/email/verify",
+                json={
+                    "email": "tester@example.invalid",
+                    "token": "000000",
+                },
+            )
+            assert wrong.status_code == 400
+            assert wrong.json()["error"]["code"] == "EMAIL_OTP_INVALID"
+            assert "private" not in wrong.text
+            verified = client.post(
+                "/api/v1/auth/email/verify",
+                json={
+                    "email": "tester@example.invalid",
+                    "token": "123456",
+                },
+            )
+            assert verified.status_code == 200
+            assert verified.json()["data"]["status"] == "registered"
+            assert verified.json()["data"]["session"] is None
+            assert "synthetic-refresh" not in verified.text
+            assert "/auth/v1/user" in calls
+            assert "/auth/v1/logout?scope=local" in calls
+            assert verified.headers["cache-control"] == "private, no-store"
+            assert not verified.headers.get("set-cookie")
+            assert (
+                client.post(
+                    "/api/v1/auth/email/resend",
+                    json={
+                        "email": "unknown@example.invalid",
+                    },
+                ).status_code
+                == 202
+            )
+            for path in ("verify", "resend"):
+                for email, expected in (
+                    ("limited@example.invalid", 429),
+                    ("outage@example.invalid", 503),
+                ):
+                    body = {"email": email}
+                    if path == "verify":
+                        body["token"] = "123456"
+                    assert (
+                        client.post(f"/api/v1/auth/email/{path}", json=body).status_code == expected
+                    )
+            unconfirmed = client.post(
+                "/api/v1/auth/login",
+                json={
+                    "email": "unconfirmed@example.invalid",
+                    "password": "Test-Pass123!",
+                },
+            )
+            assert unconfirmed.status_code == 403
+            assert unconfirmed.json()["error"]["code"] == "EMAIL_NOT_VERIFIED"
 
 
 def prepare(settings, identities):

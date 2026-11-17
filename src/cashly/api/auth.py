@@ -13,8 +13,10 @@ from cashly.schemas.auth import (
     AuthData,
     AuthEnvelope,
     AuthSession,
+    EmailVerificationRequest,
     LoginRequest,
     RegisterRequest,
+    VerifyEmailRequest,
 )
 from cashly.services.accounts import bootstrap
 
@@ -80,6 +82,13 @@ async def password_action(request: Request, body: LoginRequest, *, register: boo
     if upstream.status_code >= 500:
         raise ApiError(503, "AUTH_UNAVAILABLE", "Layanan autentikasi sedang tidak tersedia.")
     if not upstream.is_success:
+        if not register:
+            try:
+                unconfirmed = upstream.json().get("code") == "email_not_confirmed"
+            except (ValueError, AttributeError):
+                unconfirmed = False
+            if unconfirmed:
+                raise ApiError(403, "EMAIL_NOT_VERIFIED", "Verifikasi email sebelum masuk.")
         raise ApiError(
             400 if register else 401,
             "REGISTRATION_FAILED" if register else "INVALID_CREDENTIALS",
@@ -163,7 +172,92 @@ async def register(body: RegisterRequest, request: Request, response: Response) 
         "No bearer token required. Returns a session and prepares the Cashly account "
         "automatically. Use access_token in Swagger Authorize to call /me."
     ),
-    responses={401: {"description": "Incorrect credentials"}},
+    responses={
+        401: {"description": "Incorrect credentials"},
+        403: {"description": "Email verification required"},
+    },
 )
 async def login(body: LoginRequest, request: Request) -> AuthEnvelope:
     return await password_action(request, body, register=False)
+
+
+@router.post(
+    "/email/resend",
+    response_model=AuthEnvelope,
+    status_code=202,
+    summary="Resend signup verification email",
+    responses={
+        429: {"description": "Provider send limit reached"},
+        503: {"description": "Auth provider unavailable"},
+    },
+)
+async def resend_email(body: EmailVerificationRequest, request: Request) -> AuthEnvelope:
+    await email_provider_action(request, "/resend", {"email": body.email, "type": "signup"})
+    # A generic result must not reveal whether an address has an account.
+    return AuthEnvelope(data=AuthData(status="verification_required"))
+
+
+@router.post(
+    "/email/verify",
+    response_model=AuthEnvelope,
+    summary="Verify signup email OTP without signing in",
+    responses={
+        400: {"description": "Invalid or expired verification code"},
+        429: {"description": "Provider attempt limit reached"},
+        503: {"description": "Auth provider unavailable"},
+    },
+)
+async def verify_email(body: VerifyEmailRequest, request: Request) -> AuthEnvelope:
+    result = await email_provider_action(
+        request,
+        "/verify",
+        {
+            "email": body.email,
+            "token": body.token.get_secret_value(),
+            "type": "email",
+        },
+    )
+    token = result.get("access_token")
+    if not isinstance(token, str) or not token:
+        raise ApiError(503, "AUTH_INVALID_RESPONSE", "Respons autentikasi tidak valid.")
+    try:
+        await verify_access_token(request, token)
+    finally:
+        url, key = authority(request)
+        try:
+            await request.app.state.auth_http.post(
+                url + "/auth/v1/logout?scope=local",
+                headers={"apikey": key, "Authorization": "Bearer " + token},
+            )
+        except httpx2.HTTPError:
+            pass
+    # Cashly account initialization happens at the next explicit login.
+    return AuthEnvelope(data=AuthData(status="registered"))
+
+
+async def email_provider_action(request: Request, path: str, payload: dict) -> dict:
+    url, key = authority(request)
+    try:
+        result = await request.app.state.auth_http.post(
+            url + "/auth/v1" + path,
+            headers={"apikey": key},
+            json=payload,
+        )
+    except httpx2.HTTPError:
+        raise ApiError(503, "AUTH_UNAVAILABLE", "Layanan autentikasi belum tersedia.") from None
+    if result.status_code == 429:
+        raise ApiError(429, "AUTH_RATE_LIMITED", "Tunggu sebelum mencoba kembali.")
+    if result.status_code >= 500:
+        raise ApiError(503, "AUTH_UNAVAILABLE", "Layanan autentikasi belum tersedia.")
+    if not result.is_success:
+        if path == "/resend":
+            # Do not leak account existence through provider error details.
+            return {}
+        raise ApiError(400, "EMAIL_OTP_INVALID", "Kode tidak valid atau kedaluwarsa.")
+    try:
+        data = result.json()
+        if not isinstance(data, dict):
+            raise ValueError
+        return data
+    except ValueError:
+        raise ApiError(503, "AUTH_INVALID_RESPONSE", "Respons autentikasi tidak valid.") from None
