@@ -38,6 +38,18 @@ def provider(client, settings, method, path, payload=None, token=None):
     if response.status_code >= 500:
         raise ApiError(503, "AUTH_UNAVAILABLE", "Layanan akun belum tersedia.")
     if not response.is_success:
+        if method == "PUT" and path == "/user" and payload and "email" in payload:
+            try:
+                detail = response.json()
+                code = detail.get("error_code") or detail.get("code", "")
+            except (ValueError, AttributeError):
+                code = ""
+            if code == "email_exists":
+                raise ApiError(
+                    409,
+                    "EMAIL_ALREADY_REGISTERED",
+                    "Email sudah terdaftar pada akun lain. Gunakan email yang berbeda.",
+                )
         raise ApiError(
             400,
             "ACCOUNT_ACTION_REJECTED",

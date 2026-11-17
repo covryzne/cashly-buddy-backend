@@ -37,7 +37,18 @@ def update_profile(body: ProfileInput, request: Request, identity: VerifiedIdent
         ) from None
 
 
-@router.post("/security/email/request", status_code=202, response_model=SecurityChallengeEnvelope)
+@router.post(
+    "/security/email/request",
+    status_code=202,
+    response_model=SecurityChallengeEnvelope,
+    responses={
+        409: {
+            "description": (
+                "EMAIL_ALREADY_REGISTERED: email already belongs to another account; no OTP sent"
+            )
+        }
+    },
+)
 def request_email(
     body: EmailChangeInput,
     request: Request,

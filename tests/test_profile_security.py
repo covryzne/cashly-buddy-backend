@@ -34,6 +34,23 @@ def test_security_challenge_attempt_limit_expiry_and_identity_validation(auth_po
             try:
                 bootstrap(db, settings, identity)
                 headers = {"Authorization": "Bearer google-valid"}
+                duplicate = api.post(
+                    "/api/v1/me/security/email/request",
+                    headers=headers,
+                    json={"email": "taken@example.invalid"},
+                )
+                assert duplicate.status_code == 409
+                assert duplicate.json()["error"]["code"] == "EMAIL_ALREADY_REGISTERED"
+                assert "private provider" not in duplicate.text
+                engine = build_engine(settings, migration=True)
+                with engine.connect() as connection:
+                    assert (
+                        connection.scalar(
+                            text("SELECT count(*) FROM cashly.account_security_challenges")
+                        )
+                        == 0
+                    )
+                engine.dispose()
                 path = "/api/v1/me/security/password/"
                 challenge = api.post(path + "request", headers=headers, json={}).json()["data"][
                     "challenge_id"

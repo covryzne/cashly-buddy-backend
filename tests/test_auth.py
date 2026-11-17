@@ -62,6 +62,14 @@ def auth_authority(user_id):
         def do_PUT(self):
             calls.append(self.path)
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+            if body.get("email") == "taken@example.invalid":
+                self.send_response(422)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(
+                    b'{"code":422,"error_code":"email_exists","msg":"private provider details"}'
+                )
+                return
             if body.get("email"):
                 state.update(new_email=body["email"], current=False, new=False)
             self.send_response(200)
