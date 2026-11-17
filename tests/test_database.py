@@ -106,11 +106,22 @@ def test_tls_diagnostic_uses_client_driver_not_pooler_server_view(client_tls):
     assert all("pg_stat_ssl" not in str(call.args[0]) for call in connection.scalar.call_args_list)
 
 
-def test_migrations_reject_staging_without_connecting():
+def test_migrations_reject_prod_without_connecting():
     with patch("cashly.db.commands.command.upgrade") as upgrade:
-        with pytest.raises(ConfigurationError, match="dev only"):
-            upgrade_database(Settings(environment="staging"))
+        with pytest.raises(ConfigurationError, match="dev/staging only"):
+            upgrade_database(Settings(environment="prod"))
     upgrade.assert_not_called()
+
+
+def test_staging_migration_uses_selected_settings():
+    settings = Settings(environment="staging")
+    with (
+        patch("cashly.db.commands.verify_development_target") as verify,
+        patch("cashly.db.commands.command.upgrade") as upgrade,
+    ):
+        upgrade_database(settings)
+    verify.assert_called_once_with(settings)
+    assert upgrade.call_args.args[0].attributes["settings"] is settings
 
 
 def test_remote_migration_target_must_match_supabase_project():

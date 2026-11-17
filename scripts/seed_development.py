@@ -176,8 +176,7 @@ def main():
                 "seeded": True,
                 "already_seeded": result["already_seeded"],
                 "credentials_file": CREDENTIALS.name,
-                "level": result["gamification"]["level"],
-                "xp": result["gamification"]["total_xp"],
+                "hero_level": result["gamification"]["hero_level"],
             }
         )
     )

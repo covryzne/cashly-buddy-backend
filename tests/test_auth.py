@@ -53,10 +53,21 @@ def auth_postgres_settings(postgres_settings):
 @contextmanager
 def auth_authority(user_id):
     calls = []
+    state = {"email": "tester@example.invalid", "new_email": None, "current": False, "new": False}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
+
+        def do_PUT(self):
+            calls.append(self.path)
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+            if body.get("email"):
+                state.update(new_email=body["email"], current=False, new=False)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"{}")
 
         def do_POST(self):
             calls.append(self.path)
@@ -69,6 +80,24 @@ def auth_authority(user_id):
                 status, payload = 503, {}
             elif body.get("email") == "limited@example.invalid":
                 status, payload = 429, {}
+            elif self.path == "/auth/v1/recover":
+                status, payload = 200, {}
+            elif self.path == "/auth/v1/verify" and body.get("type") == "email_change":
+                if body.get("email") == state["email"] and body.get("token") == "111111":
+                    state["current"] = True
+                elif body.get("email") == state["new_email"] and body.get("token") == "222222":
+                    state["new"] = True
+                else:
+                    self.send_response(403)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b'{"msg":"private OTP error"}')
+                    return
+                if state["current"] and state["new"]:
+                    state["email"] = state["new_email"]
+                    status, payload = 200, {"access_token": "email-only"}
+                else:
+                    status, payload = 200, {"msg": "Confirm the other email"}
             elif self.path == "/auth/v1/verify" and body.get("token") != "123456":
                 status, payload = 403, {"msg": "private OTP details"}
             elif self.path == "/auth/v1/resend":
@@ -104,7 +133,7 @@ def auth_authority(user_id):
                     200,
                     {
                         "id": str(user_id),
-                        "email": "tester@example.invalid",
+                        "email": state["email"],
                         "email_confirmed_at": None
                         if token == "Bearer unverified"
                         else "2026-11-16T00:00:00Z",
@@ -264,12 +293,11 @@ def test_http_auth_and_account_reads(auth_postgres_settings):
                 assert first.json()["data"]["display_name"] == "Google Tester"
                 assert first.json()["data"]["sample_data"] is False
                 assert client.post("/api/v1/auth/bootstrap", headers=headers).json() == first.json()
-                assert (
-                    client.post(
-                        "/api/v1/auth/bootstrap", headers={"Authorization": "Bearer email-only"}
-                    ).json()
-                    == first.json()
-                )
+                email_account = client.post(
+                    "/api/v1/auth/bootstrap", headers={"Authorization": "Bearer email-only"}
+                ).json()["data"]
+                assert email_account["account_id"] == first.json()["data"]["account_id"]
+                assert email_account["username"] == first.json()["data"]["username"]
                 assert client.get("/api/v1/me", headers=headers).json() == first.json()
                 records = client.get("/api/v1/expenses", headers=headers).json()
                 assert len(records["data"]) == 0
@@ -279,7 +307,7 @@ def test_http_auth_and_account_reads(auth_postgres_settings):
                 checked = client.post("/api/v1/gamification/checkins/review", headers=daily_headers)
                 assert checked.status_code == 200, checked.text
                 day_data = checked.json()["data"]
-                assert day_data["today_checked_in"] and day_data["total_xp"] == 10
+                assert day_data["today_checked_in"] and day_data["hero_level"] == 1
                 assert (
                     next(
                         day
@@ -298,7 +326,7 @@ def test_http_auth_and_account_reads(auth_postgres_settings):
                     "/api/v1/gamification/checkins/review",
                     headers={**headers, "Idempotency-Key": str(uuid4())},
                 )
-                assert duplicate.json()["data"]["total_xp"] == 10
+                assert duplicate.json()["data"]["hero_level"] == 1
                 assert set(calls) == {"/auth/v1/user"}
             finally:
                 db.dispose()
@@ -624,8 +652,8 @@ def test_finance_api_crud_rewards_replay_and_ownership(auth_postgres_settings):
                         == 409
                     )
                     game = api.get("/api/v1/gamification/overview", headers=headers).json()["data"]
-                    assert game["total_xp"] == 60 and game["current_streak"] == 1
-                    assert game["max_mascot_stage_unlocked"] == 0
+                    assert game["hero_level"] == 1 and game["current_streak"] == 1
+                    assert game["hero_level"] == 1
                     assert (
                         api.get(f"/api/v1/expenses/{identifier}", headers=headers).status_code
                         == 200
@@ -660,7 +688,7 @@ def test_finance_api_crud_rewards_replay_and_ownership(auth_postgres_settings):
                     )
                     review = api.post("/api/v1/reports/weekly-story/complete", headers=headers)
                     assert review.status_code == 200, review.text
-                    assert review.json()["data"]["total_xp"] == 100
+                    assert review.json()["data"]["hero_level"] == 1
                     assert (
                         api.post("/api/v1/reports/weekly-story/complete", headers=headers).json()
                         == review.json()
@@ -681,9 +709,9 @@ def test_finance_api_crud_rewards_replay_and_ownership(auth_postgres_settings):
                     assert restored.json()["data"]["items"][0]["unit_price_idr"] == "15000"
                     assert (
                         api.get("/api/v1/gamification/overview", headers=headers).json()["data"][
-                            "total_xp"
+                            "hero_level"
                         ]
-                        == 100
+                        == 1
                     )
                     invalid = {**body, "amount_idr": "1"}
                     assert (
@@ -714,11 +742,11 @@ def test_seed_scenario_repeat_and_manual_freeze(auth_postgres_settings):
         account = bootstrap(db, settings, identity)
         seed = runpy.run_path(str(Path("scripts/seed_development.py")))["seed_scenario"]
         result = seed(db, identity)
-        assert result["gamification"]["total_xp"] == 170
+        assert result["gamification"]["hero_level"] == 1
         assert result["gamification"]["current_streak"] == 12
-        assert result["gamification"]["level"] == 2
-        assert result["gamification"]["max_mascot_stage_unlocked"] == 1
-        assert result["gamification"]["freeze_balance"] == 1
+        assert result["gamification"]["hero_level"] == 1
+        assert result["gamification"]["hero_level"] == 1
+        assert result["gamification"]["protection_remaining"] == 5
         assert seed(db, identity)["already_seeded"]
         # Exercise the explicit dev-only review reset on this disposable account.
         from cashly.services.accounts import load_account
@@ -752,8 +780,8 @@ def test_seed_scenario_repeat_and_manual_freeze(auth_postgres_settings):
             with db.transaction(auth_user_id=identity.user_id) as session:
                 load_account(session, identity)
                 assert (
-                    gamification.overview(session, account.account_id, "Asia/Jakarta")["total_xp"]
-                    == 170
+                    gamification.overview(session, account.account_id, "Asia/Jakarta")["hero_level"]
+                    == 1
                 )
         finally:
             admin.dispose()
@@ -770,12 +798,12 @@ def test_seed_scenario_repeat_and_manual_freeze(auth_postgres_settings):
         with db.transaction(auth_user_id=identity.user_id) as session:
             finance.locked_account(session, identity)
             after = gamification.overview(session, account.account_id, "Asia/Jakarta")
-            assert not after["today_checked_in"] and after["total_xp"] == 160
-            assert after["max_mascot_stage_unlocked"] == 1
+            assert not after["today_checked_in"] and after["hero_level"] == 1
+            assert after["hero_level"] == 1
             gamification.action(session, account.account_id, "Asia/Jakarta", "review")
             assert (
-                gamification.overview(session, account.account_id, "Asia/Jakarta")["total_xp"]
-                == 170
+                gamification.overview(session, account.account_id, "Asia/Jakarta")["hero_level"]
+                == 1
             )
         assert len(finance.list_expenses(db, identity)["data"]) == before_rows
         rows = finance.list_expenses(db, identity, limit=5)
@@ -802,17 +830,17 @@ def test_seed_scenario_repeat_and_manual_freeze(auth_postgres_settings):
                         session, account.account_id, "Asia/Jakarta", day - timedelta(days=offset)
                     )
                 before = gamification.overview(session, account.account_id, "Asia/Jakarta")
-                assert before["freeze_balance"] == 2 and before["recovery"]
+                assert before["protection_remaining"] == 5 and before["recovery"]
                 restored = gamification.action(
-                    session, account.account_id, "Asia/Jakarta", "freeze", day - timedelta(days=1)
+                    session, account.account_id, "Asia/Jakarta", "freeze", [day - timedelta(days=1)]
                 )
-                assert restored["freeze_balance"] == 1 and restored["total_xp"] == 140
-                assert restored["current_streak"] == 14
+                assert restored["protection_remaining"] == 4 and restored["hero_level"] == 1
+                assert restored["current_streak"] == 15
                 again = gamification.action(
-                    session, account.account_id, "Asia/Jakarta", "freeze", day - timedelta(days=1)
+                    session, account.account_id, "Asia/Jakarta", "freeze", [day - timedelta(days=1)]
                 )
                 assert again == restored
-                assert restored["max_mascot_stage_unlocked"] == 1
+                assert restored["hero_level"] == 1
         finally:
             engine.dispose()
     finally:
@@ -845,9 +873,9 @@ def test_calendar_is_current_local_week_monday_to_sunday(auth_postgres_settings)
             gamification.checkin(session, account.account_id, "Asia/Jakarta", wednesday)
             assert (
                 gamification.overview(session, account.account_id, "Asia/Jakarta", wednesday)[
-                    "total_xp"
+                    "hero_level"
                 ]
-                == 10
+                == 1
             )
             next_week = gamification.overview(
                 session, account.account_id, "Asia/Jakarta", date(2026, 11, 23)

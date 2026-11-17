@@ -18,6 +18,7 @@ class Identity:
     email: str
     display_name: str
     verified_at: datetime
+    providers: tuple[str, ...] = ()
 
 
 async def require_identity(
@@ -74,6 +75,7 @@ async def verify_access_token(request: Request, token: str) -> Identity:
             email=user["email"],
             display_name=name,
             verified_at=datetime.fromisoformat(verified.replace("Z", "+00:00")),
+            providers=tuple(sorted(p for p in providers if isinstance(p, str))),
         )
     except (KeyError, TypeError, ValueError, AttributeError):
         raise HTTPException(503) from None

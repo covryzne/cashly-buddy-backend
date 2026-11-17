@@ -85,7 +85,6 @@ def reset_daily(settings, email):
         return {
             "daily_checkins_reset": removed,
             "local_date": str(now.date()),
-            "xp_removed": removed * 10,
             "freeze_grants_reversed": grant,
         }
     finally:

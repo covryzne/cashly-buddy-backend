@@ -15,3 +15,5 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
 -- RLS trusts only transaction-local identity set by the verified backend.
 GRANT SELECT, INSERT ON cashly.game_events TO cashly_runtime;
 GRANT SELECT, INSERT, UPDATE ON cashly.game_states TO cashly_runtime;
+GRANT SELECT, INSERT ON cashly.streak_protections TO cashly_runtime;
+GRANT SELECT, INSERT, UPDATE ON cashly.account_security_challenges TO cashly_runtime;

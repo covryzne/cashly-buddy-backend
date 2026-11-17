@@ -151,6 +151,31 @@ def test_staging_origins_require_https():
         Settings.from_values({"CASHLY_ENV": "staging", "CORS_ORIGINS": '["http://example.com"]'})
 
 
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://[::1]:3000",
+    ],
+)
+def test_staging_allows_local_frontend_but_production_requires_https(origin):
+    import json
+
+    values = {"CASHLY_ENV": "staging", "CORS_ORIGINS": json.dumps([origin])}
+    assert Settings.from_values(values).cors_origins == (origin,)
+    with pytest.raises(ConfigurationError, match="HTTPS"):
+        Settings.from_values({**values, "CASHLY_ENV": "prod"})
+
+
+@pytest.mark.parametrize("origin", ["http://localhost.example.com", "http://192.168.1.10"])
+def test_staging_http_exception_is_only_loopback(origin):
+    import json
+
+    with pytest.raises(ConfigurationError, match="HTTPS"):
+        Settings.from_values({"CASHLY_ENV": "staging", "CORS_ORIGINS": json.dumps([origin])})
+
+
 def test_settings_hide_secrets_and_allow_empty_future_connections():
     settings = Settings.from_values({"CASHLY_ENV": "dev", "DATABASE_URL": "private-secret"})
     assert "private-secret" not in repr(settings)

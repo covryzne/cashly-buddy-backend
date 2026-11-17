@@ -14,8 +14,18 @@ def main() -> None:
     parser.add_argument(
         "command", choices=["dev", "start", "check", "db-check", "db-upgrade", "db-sql"]
     )
-    parser.add_argument("--app-env", choices=["dev", "staging", "prod"])
-    parser.add_argument("--env-source", choices=["file", "system"])
+    parser.add_argument(
+        "--app-env",
+        "--env",
+        dest="app_env",
+        choices=["dev", "staging", "prod"],
+        help="Select .env.dev/.env.staging/.env.prod independently of the Git branch",
+    )
+    parser.add_argument(
+        "--env-source",
+        choices=["file", "system"],
+        help="Read the selected env file (default) or system environment",
+    )
     args = parser.parse_args()
     if args.command == "db-sql":
         # Reviewed SQL preview requires no dotenv or live credentials.
@@ -24,14 +34,14 @@ def main() -> None:
     try:
         selected = resolve_environment(override=args.app_env, source_override=args.env_source)
         settings = Settings.from_selection(selected)
-        if args.command == "dev" and selected.environment != "dev":
-            raise ConfigurationError("Use start for staging/prod; reload is development-only.")
+        if args.command == "dev" and selected.environment == "prod":
+            raise ConfigurationError("Use start for prod; dev reload supports dev/staging only.")
         if args.command == "db-check":
             print(json.dumps(check_database(settings)))
             return
         if args.command == "db-upgrade":
             upgrade_database(settings)
-            print("[Cashly] development migration applied successfully.")
+            print(f"[Cashly] {selected.environment} migration applied successfully.")
             return
     except ConfigurationError as exc:
         parser.exit(2, f"[Cashly] {exc}\n")

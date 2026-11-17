@@ -9,7 +9,7 @@ from cashly.services.accounts import runtime_context
     "environment,host,expected",
     [
         ("dev", "127.0.0.1", "dev"),
-        ("staging", "localhost", "dev"),
+        ("staging", "localhost", "staging"),
         ("staging", "db.example.supabase.co", "staging"),
         ("prod", "db.example.supabase.co", "prod"),
         ("dev", "db.example.supabase.co", "dev"),

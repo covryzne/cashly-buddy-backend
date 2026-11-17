@@ -39,7 +39,7 @@ def test_real_postgres_migration_constraints_rls_and_rollback(postgres_settings)
                 conn.scalar(
                     text("SELECT count(*) FROM pg_tables WHERE schemaname='cashly' AND rowsecurity")
                 )
-                == 10
+                == 12
             )
             assert conn.scalar(text("SELECT to_regclass('public.unrelated_sentinel') IS NOT NULL"))
             # Only this disposable cluster has test auth rows and a custom runtime group.

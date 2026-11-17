@@ -3,7 +3,7 @@ from unittest.mock import patch
 import pytest
 
 from cashly.cli import main
-from cashly.core.environment import EnvironmentSelection
+from cashly.core.environment import EnvironmentSelection, resolve_environment
 
 
 def selection(environment="dev"):
@@ -78,3 +78,31 @@ def test_start_passes_pinned_selection_to_children(monkeypatch):
 
     assert os.environ["CASHLY_ENV"] == "staging"
     assert os.environ["CASHLY_ENV_SOURCE"] == "system"
+
+
+@pytest.mark.parametrize("flag", ["--env", "--app-env"])
+def test_local_reload_can_select_staging_file(flag, tmp_path, monkeypatch, capsys):
+    import os
+
+    monkeypatch.setenv("CASHLY_ENV", "dev")
+    monkeypatch.setenv("CASHLY_ENV_SOURCE", "system")
+    (tmp_path / ".env.staging").write_text(
+        "CORS_ORIGINS='[\"http://localhost:3000\"]'\n"
+        "SUPABASE_PUBLISHABLE_KEY=private-settings-key\n",
+        encoding="utf-8",
+    )
+    with (
+        patch("sys.argv", ["cashly", "dev", flag, "staging", "--env-source", "file"]),
+        patch(
+            "cashly.cli.resolve_environment",
+            side_effect=lambda **kwargs: resolve_environment(root=tmp_path, env={}, **kwargs),
+        ),
+        patch("cashly.cli.uvicorn.run") as run,
+    ):
+        main()
+    output = capsys.readouterr().out
+    assert "environment=staging source=file file=.env.staging" in output
+    assert "private-settings-key" not in output
+    assert run.call_args.kwargs["reload"] is True
+    assert os.environ["CASHLY_ENV"] == "staging"
+    assert os.environ["CASHLY_ENV_SOURCE"] == "file"

@@ -49,7 +49,14 @@ class ExpenseInput(BaseModel):
 
 class FreezeInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    protected_local_date: date
+    protected_local_dates: list[date] = Field(min_length=1, max_length=4)
+
+    @field_validator("protected_local_dates")
+    @classmethod
+    def unique_dates(cls, value):
+        if len(set(value)) != len(value):
+            raise ValueError("Duplicate protection date")
+        return sorted(value)
 
 
 class PreferencesInput(BaseModel):
@@ -108,7 +115,6 @@ class GameMission(BaseModel):
     code: str
     title: str
     completed: bool
-    xp: int
     can_complete: bool = False
     available_from: date | None = None
     test_override: bool = False
@@ -120,16 +126,19 @@ class CalendarDay(BaseModel):
 
 
 class Recovery(BaseModel):
-    protected_local_date: date
+    protected_local_dates: list[date]
+    required: int
+    can_restore: bool
+    streak_after_recovery: int
 
 
 class GameOverview(BaseModel):
-    level: int
-    total_xp: int
+    hero_level: int
     current_streak: int
     longest_streak: int
-    freeze_balance: int
-    max_mascot_stage_unlocked: int
+    protection_remaining: int
+    protection_month: date
+    streak_status: Literal["active", "needs_recovery", "broken"]
     today_checked_in: bool
     today_local_date: date
     timezone: str

@@ -35,7 +35,7 @@ def runtime_context(settings: Settings) -> RuntimeContext | None:
         return None
     local = database_url(settings.database_url).host in {"127.0.0.1", "localhost", "::1"}
     return RuntimeContext(
-        environment="dev" if local else settings.environment,
+        environment=settings.environment,
         database_kind="local" if local else "hosted",
     )
 
@@ -50,6 +50,9 @@ def account_data(
     return AccountData(
         account_id=account.id,
         display_name=profile.display_name,
+        username=profile.username,
+        password_login_enabled=profile.password_login_enabled,
+        google_connected="google" in identity.providers,
         email=identity.email,
         timezone=profile.timezone,
         theme_preference=profile.theme_preference,
@@ -59,7 +62,9 @@ def account_data(
     )
 
 
-def bootstrap(db: Database, settings: Settings, identity: Identity) -> AccountData:
+def bootstrap(
+    db: Database, settings: Settings, identity: Identity, password_enabled=False
+) -> AccountData:
     with db.transaction(auth_user_id=identity.user_id) as session:
         lock_identity(session, identity.user_id)
         link = find_link(session, identity.user_id)
@@ -78,6 +83,9 @@ def bootstrap(db: Database, settings: Settings, identity: Identity) -> AccountDa
             )
             session.flush()
         account, profile = load_account(session, identity)
+        if password_enabled:
+            profile.password_login_enabled = True
+            session.flush()
         result = account_data(account, profile, identity, False, settings)
     return result
 

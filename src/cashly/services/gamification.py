@@ -1,4 +1,4 @@
-"""Event-backed rules approved for the initial development flow (ADR-0073)."""
+"""Streak-only heroes and monthly manual protections (ADR-0083)."""
 
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from cashly.core.errors import ApiError
 from cashly.core.settings import Settings
 from cashly.db.connection import database_url
-from cashly.db.models import Expense, GameEvent, GameState
+from cashly.db.models import Expense, GameEvent, StreakProtection
 
 
 def events(session, account_id):
@@ -72,37 +72,73 @@ def weekly_test_override(settings: Settings | None) -> bool:
     )
 
 
+def recovery_dates(active, protected, day):
+    covered = active | protected
+    cursor = day - timedelta(days=1)
+    earliest = day - timedelta(days=4)
+    while cursor in covered and cursor >= earliest:
+        cursor -= timedelta(days=1)
+    if cursor < earliest:
+        return []
+    missing = []
+    while cursor not in covered and cursor >= earliest:
+        missing.append(cursor)
+        cursor -= timedelta(days=1)
+    if cursor not in covered or not streaks(active, protected, cursor)[0]:
+        return []
+    return sorted(missing)
+
+
+def hero_level(streak):
+    return 1 + sum(streak >= milestone for milestone in (30, 100, 150, 200))
+
+
 def overview(session, account_id, timezone, day=None, settings=None):
     day = day or today(timezone)
     ledger = events(session, account_id)
     active = {e.local_date for e in ledger if e.kind == "checkin"}
-    protected = {e.local_date for e in ledger if e.kind == "freeze_spent"}
-    current, longest = streaks(active, protected, day)
-    state = session.get(GameState, account_id)
-    stage = state.max_stage if state else 0
-    xp = sum(e.xp for e in ledger)
-    balance = sum(e.freeze_delta for e in ledger)
-    yesterday = day - timedelta(days=1)
-    recoverable = (
-        yesterday not in active | protected and yesterday - timedelta(days=1) in active | protected
+    protections = list(
+        session.scalars(select(StreakProtection).where(StreakProtection.account_id == account_id))
     )
+    protected = {p.protected_date for p in protections}
+    # Preserve historical protection dates from the old event ledger.
+    protected |= {e.local_date for e in ledger if e.kind == "freeze_spent"}
+    current, longest = streaks(active, protected, day)
+    month = day.replace(day=1)
+    available = max(0, 5 - sum(p.quota_month == month for p in protections))
+    missing = recovery_dates(active, protected, day)
+    recovery = None
+    if missing:
+        pending, _ = streaks(active, protected | set(missing), day)
+        after, _ = streaks(active | {day}, protected | set(missing), day)
+        current = pending
+        recovery = {
+            "protected_local_dates": [str(d) for d in missing],
+            "required": len(missing),
+            "can_restore": available >= len(missing),
+            "streak_after_recovery": after,
+        }
     week = day - timedelta(days=day.weekday())
     weekend = day.weekday() >= 5
     test_override = weekly_test_override(settings) and not weekend
     return {
-        "level": 1 + xp // 100,
-        "total_xp": xp,
+        "hero_level": hero_level(current),
         "current_streak": current,
         "longest_streak": longest,
-        "freeze_balance": balance,
-        "max_mascot_stage_unlocked": stage,
+        "protection_remaining": available,
+        "protection_month": str(month),
+        "streak_status": "needs_recovery"
+        if recovery
+        else "active"
+        if current or not active
+        else "broken",
         "today_checked_in": day in active,
         "today_local_date": day.isoformat(),
         "timezone": timezone,
-        "recovery": {"protected_local_date": yesterday.isoformat()} if recoverable else None,
+        "recovery": recovery,
         "calendar": [
             {
-                "date": (week + timedelta(days=n)).isoformat(),
+                "date": str(week + timedelta(days=n)),
                 "status": "active"
                 if week + timedelta(days=n) in active
                 else "protected"
@@ -114,14 +150,13 @@ def overview(session, account_id, timezone, day=None, settings=None):
             for n in range(7)
         ],
         "missions": [
-            {"code": "daily", "title": "Check-in hari ini", "completed": day in active, "xp": 10},
+            {"code": "daily", "title": "Check-in hari ini", "completed": day in active},
             {
                 "code": "weekly",
                 "title": "Review cerita mingguan",
                 "completed": any(e.event_key == f"weekly:{week}" for e in ledger),
-                "xp": 40,
                 "can_complete": weekend or test_override,
-                "available_from": (week + timedelta(days=5)).isoformat(),
+                "available_from": str(week + timedelta(days=5)),
                 "test_override": test_override,
             },
         ],
@@ -130,34 +165,11 @@ def overview(session, account_id, timezone, day=None, settings=None):
 
 def checkin(session, account_id, timezone, day=None):
     day = day or today(timezone)
-    if record(session, account_id, timezone, f"daily:{day}", "checkin", day, xp=10):
-        ledger = events(session, account_id)
-        active = {e.local_date for e in ledger if e.kind == "checkin"}
-        if len(active) % 7 == 0:
-            balance = sum(e.freeze_delta for e in ledger)
-            record(
-                session,
-                account_id,
-                timezone,
-                f"freeze-grant:{len(active) // 7}",
-                "freeze_grant",
-                day,
-                freeze=int(balance < 2),
-            )
-        protected = {e.local_date for e in ledger if e.kind == "freeze_spent"}
-        _, longest = streaks(active, protected, day)
-        unlocked = sum(longest >= milestone for milestone in (10, 30, 100, 150, 200))
-        state = session.get(GameState, account_id)
-        if state is None:
-            session.add(GameState(account_id=account_id, max_stage=unlocked))
-        else:
-            state.max_stage = max(state.max_stage, unlocked)
-        session.flush()
+    record(session, account_id, timezone, f"daily:{day}", "checkin", day)
 
 
 def on_expense(session, account_id, timezone, occurred_at):
     day = today(timezone)
-    record(session, account_id, timezone, "first-expense", "first_expense", day, xp=50)
     if occurred_at.astimezone(ZoneInfo(timezone)).date() == day:
         checkin(session, account_id, timezone, day)
 
@@ -165,25 +177,36 @@ def on_expense(session, account_id, timezone, occurred_at):
 def action(session, account_id, timezone, kind, protected_date=None, settings=None):
     day = today(timezone)
     if kind == "freeze":
-        current = overview(session, account_id, timezone, day, settings)
-        if any(
-            e.kind == "freeze_spent" and e.local_date == protected_date
-            for e in events(session, account_id)
-        ):
-            return current
-        if not current["recovery"] or protected_date != day - timedelta(days=1):
-            raise ApiError(409, "STREAK_FREEZE_NOT_ELIGIBLE", "Tanggal tidak dapat dipulihkan.")
-        if current["freeze_balance"] < 1:
-            raise ApiError(409, "STREAK_FREEZE_UNAVAILABLE", "Stok Freeze habis.")
-        record(
-            session,
-            account_id,
-            timezone,
-            f"freeze:{protected_date}",
-            "freeze_spent",
-            protected_date,
-            freeze=-1,
+        requested = sorted(set(protected_date or []))
+        existing = set(
+            session.scalars(
+                select(StreakProtection.protected_date).where(
+                    StreakProtection.account_id == account_id
+                )
+            )
         )
+        if requested and set(requested) <= existing:
+            return overview(session, account_id, timezone, day, settings)
+        current = overview(session, account_id, timezone, day, settings)
+        recovery = current["recovery"]
+        if not recovery or [str(d) for d in requested] != recovery["protected_local_dates"]:
+            raise ApiError(
+                409,
+                "STREAK_PROTECTION_NOT_ELIGIBLE",
+                "Tanggal pemulihan sudah berubah. Muat ulang data.",
+            )
+        if not recovery["can_restore"]:
+            raise ApiError(
+                409, "STREAK_PROTECTION_UNAVAILABLE", "Jatah proteksi bulan ini tidak cukup."
+            )
+        for value in requested:
+            session.add(
+                StreakProtection(
+                    account_id=account_id, protected_date=value, quota_month=day.replace(day=1)
+                )
+            )
+        session.flush()
+        checkin(session, account_id, timezone, day)
     else:
         if kind == "no-spend":
             start = datetime.combine(day, datetime.min.time(), ZoneInfo(timezone)).astimezone(UTC)
@@ -219,7 +242,7 @@ def action(session, account_id, timezone, kind, protected_date=None, settings=No
                 .limit(1)
             ):
                 raise ApiError(409, "REVIEW_EMPTY", "Belum ada transaksi minggu ini.")
-            record(session, account_id, timezone, f"weekly:{week}", "weekly_review", day, xp=40)
+            record(session, account_id, timezone, f"weekly:{week}", "weekly_review", day)
         checkin(session, account_id, timezone)
     session.flush()
     return overview(session, account_id, timezone, settings=settings)

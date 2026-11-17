@@ -107,8 +107,15 @@ class Settings(BaseModel):
                 "Invalid settings; check PORT, LOG_LEVEL, CORS_ORIGINS and DB pool limits. "
                 "Values are omitted for privacy."
             ) from None
-        if settings.environment != "dev" and any(
-            not origin.startswith("https://") for origin in settings.cors_origins
-        ):
-            raise ConfigurationError("Staging/prod CORS origins must use HTTPS.")
+        if settings.environment != "dev":
+            for origin in settings.cors_origins:
+                local_staging = settings.environment == "staging" and urlsplit(origin).hostname in {
+                    "localhost",
+                    "127.0.0.1",
+                    "::1",
+                }
+                if not origin.startswith("https://") and not local_staging:
+                    raise ConfigurationError(
+                        "CORS requires HTTPS; staging also permits HTTP loopback for local FE."
+                    )
         return settings

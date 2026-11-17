@@ -68,11 +68,15 @@ class Profile(Timestamps, Base):
     __tablename__ = "profiles"
     __table_args__ = (
         CheckConstraint("char_length(btrim(display_name)) BETWEEN 2 AND 40", name="display_name"),
+        CheckConstraint("username ~ '^[a-z0-9._]{3,24}$'", name="username_format"),
+        Index("uq_profiles_username", text("lower(username)"), unique=True),
         CheckConstraint("theme_preference IN ('system','light','dark')", name="theme"),
         {"schema": SCHEMA},
     )
     account_id: Mapped[UUID] = mapped_column(ForeignKey("cashly.accounts.id"), primary_key=True)
     display_name: Mapped[str] = mapped_column(String(40))
+    username: Mapped[str] = mapped_column(String(24), default=lambda: "cashly_" + uuid4().hex[:16])
+    password_login_enabled: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     timezone: Mapped[str] = mapped_column(String(64), server_default="Asia/Jakarta")
     theme_preference: Mapped[str] = mapped_column(String(8), server_default="system")
 
@@ -234,3 +238,28 @@ class GameState(Base):
     )
     account_id: Mapped[UUID] = mapped_column(ForeignKey("cashly.accounts.id"), primary_key=True)
     max_stage: Mapped[int] = mapped_column(Integer, server_default="0")
+
+
+class StreakProtection(Base):
+    __tablename__ = "streak_protections"
+    __table_args__ = (Index("ix_protection_month", "account_id", "quota_month"), {"schema": SCHEMA})
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("cashly.accounts.id"), primary_key=True)
+    protected_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    quota_month: Mapped[date] = mapped_column(Date)
+    used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AccountSecurityChallenge(Base):
+    __tablename__ = "account_security_challenges"
+    __table_args__ = ({"schema": SCHEMA},)
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("cashly.accounts.id"))
+    auth_user_id: Mapped[UUID] = mapped_column(Uuid)
+    purpose: Mapped[str] = mapped_column(String(24))
+    current_email: Mapped[str] = mapped_column(String(254))
+    new_email: Mapped[str | None] = mapped_column(String(254))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_current: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    confirmed_new: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    attempts: Mapped[int] = mapped_column(Integer, server_default="0")

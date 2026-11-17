@@ -147,6 +147,14 @@ def game_action(request, identity, kind, key, day=None):
                 raise ApiError(
                     409, "IDEMPOTENCY_CONFLICT", "Kunci digunakan untuk permintaan berbeda."
                 )
+            # A cached pre-0004 response has XP fields. Preserve the original operation
+            # without replaying its side effects, but serve the current game contract.
+            if "hero_level" not in previous.response_body.get("data", {}):
+                previous.response_body = {
+                    "data": gamification.overview(
+                        session, account.id, profile.timezone, settings=request.app.state.settings
+                    )
+                }
             return previous.response_body
         result = {
             "data": gamification.action(
@@ -183,4 +191,4 @@ def weekly_review(request: Request, identity: VerifiedIdentity, key: Key):
 
 @router.post("/gamification/streak/freeze", response_model=GameEnvelope)
 def freeze(request: Request, identity: VerifiedIdentity, body: FreezeInput, key: Key):
-    return game_action(request, identity, "freeze", key, body.protected_local_date)
+    return game_action(request, identity, "freeze", key, body.protected_local_dates)

@@ -1,3 +1,9 @@
+Profile/account and streak update (ADR-0083): [setup and test guide](PROFILE_ACCOUNT_SETUP.md).
+Apply 0004 before running the updated FE/BE against an existing DB. Includes
+persistent username/profile, Google optional Cashly password, two-address email
+confirmation, streak-only heroes and five monthly protections. No real staging
+migration or SMTP send was performed for this change.
+
 # cashly-buddy-backend
 
 Latest local workflow: [LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md) (ADR-0068).
@@ -19,7 +25,7 @@ legacy DEV_SAMPLE_DATA is ignored for seeding (ADR-0072).
 
 ## Local data maintenance (ADR-0072)
 
-Local migration head: `0003_game_and_crud`. Quantity/unit price and receipt-level
+Local migration head: `0004_profile_protection`. Quantity/unit price and receipt-level
 nominal discount/tax are persisted. Expense CRUD, game ledger and reports APIs are available.
 Auth creates empty accounts even when an old env has DEV_SAMPLE_DATA=true.
 Restart BE after updating code. Existing revision 0001 is retained unchanged.
@@ -52,7 +58,7 @@ python scripts/seed_development.py
 ```
 
 This creates/reuses one local login, 16 fictional transactions with item details,
-170 XP (level 2), 12 active streak days, mascot stage 1 and 1 Freeze. Credentials
+12 active streak days, hero level 1 and five monthly protections (no XP rewards). Credentials
 are saved only in the gitignored `.cashly-dev-account.json` in this backend root;
 open that file locally for the email/password and use the normal FE login form.
 Optional DEV_SEED_EMAIL/DEV_SEED_PASSWORD process variables apply on first run.
@@ -120,7 +126,7 @@ examples and synthetic temporary test files may be inspected during this task.
 
 | Source | Priority / mapping |
 |---|---|
-| `--app-env dev\|staging\|prod` | Highest priority |
+| `--env dev\|staging\|prod` (alias `--app-env`) | Highest priority |
 | `CASHLY_ENV` | Explicit process/deployment selection |
 | CI branch metadata | GitHub, GitLab, Vercel, Azure; PR head before target |
 | Local Git branch | `dev/develop/development` and feature branches → dev; `stage/staging` → staging; `main/master/prod/production` → prod |
@@ -140,18 +146,33 @@ CLI startup/check prints only environment/source/filename, never loaded values.
 ```powershell
 # Explicit environment, requires its corresponding file:
 .venv/Scripts/python.exe -m cashly start --app-env staging
+# Local reload on branch dev, reading .env.staging:
+python -m cashly dev --env staging --env-source file
+# Validate selection/configuration without opening a DB connection:
+python -m cashly check --env staging --env-source file
+# Read-only DB check using the same staging file:
+python -m cashly db-check --env staging --env-source file
 # Deployment-injected variables, does not open any dotenv files:
 .venv/Scripts/python.exe -m cashly start --app-env prod --env-source system
 # Health-only check without private files or credentials:
 .venv/Scripts/python.exe -m cashly check --app-env dev --env-source system
 ```
 
-`dev` enables reload and is rejected for staging/prod. `start` runs without
+`dev` enables reload for dev/staging and is rejected for prod. `start` runs without
 reload. System source can also be selected with `CASHLY_ENV_SOURCE=system`.
 `HOST`, `PORT`, `LOG_LEVEL` and `CORS_ORIGINS` configure the process. Origins are
 a JSON array of exact origins without paths, wildcards or trailing slashes;
-staging/prod origins require HTTPS. Empty origins permit no browser cross-origin
+staging permits HTTP loopback origins for local FE; other staging origins and all
+prod origins require HTTPS. Empty origins permit no browser cross-origin
 access. Bind to `0.0.0.0` explicitly if the hosting environment requires it.
+
+The FE environment badge comes from backend account metadata: `.env.staging`
+selects `Staging`, independently of the current Git branch. The separate database
+kind still follows the URL host: loopback is `Database lokal`, hosted staging is
+`Database staging`. No credentials/hostnames are sent in this metadata. Keep FE
+running locally with its existing API origin; changing the backend env does not
+require switching branches or changing FE runtime. Reload the page after restart.
+API docs visibility is unchanged. Migration commands now accept dev/staging (ADR-0083).
 
 ## Database/auth configuration
 
@@ -190,7 +211,7 @@ Do not commit the generated preview. The other commands use the selected env
 file/system source without printing credentials. Fill the two DB URLs and
 `SUPABASE_URL` privately first. Choose the empty, isolated dev project; the
 launcher checks that both URLs match that project and permits online migrations
-only in dev. A correctly labeled live project cannot be detected by this guard,
+only in dev/staging. A correctly labeled live project cannot be detected by this guard,
 so verify the actual project in Supabase Dashboard before applying.
 
 `db-check` is read-only and prints only `connected`, `tls`, `privileged_role` and

@@ -156,7 +156,7 @@ const {randomUUID}=require("node:crypto");
   if((await sessionCheck).status()!==200) throw new Error("background-session-failed");
   await refreshed;
   expect(await page.evaluate(()=>window.cashlyDocumentProbe)).toBe("same-document");
-  // UI-only response fixtures exercise both states without resetting real user XP.
+  // UI-only response fixtures exercise both states without resetting real user progress.
   stage="checkin-ui-transition";
   const checkedGame={...baseline,today_checked_in:true,calendar:baseline.calendar.map(d=>d.date===baseline.today_local_date?{...d,status:"active"}:d)};
   let displayGame={...baseline,today_checked_in:false,
@@ -293,13 +293,13 @@ const {randomUUID}=require("node:crypto");
   }
   const currentGame=(await (await context.request.get(site+"/api/cashly/gamification/overview")).json()).data;
   await page.goto(site+"/profil");
-  await expect(page.getByText(String(currentGame.total_xp),{exact:false}).first()).toBeVisible();
+  await expect(page.getByText(`Hero level ${currentGame.hero_level}`,{exact:true}).first()).toBeVisible();
   await page.goto(site+"/laporan");
   await expect(page.locator("#reports-main")).toBeVisible();
   if(errors.length) throw new Error("page-error-"+errors[0]);
   require("node:fs").mkdirSync("test-results",{recursive:true});
   await page.screenshot({path:"test-results/seed-api-browser-mobile.png",fullPage:true});
-  console.log("PASS: dynamic dev database badge, Monday-Sunday streak, check-in UI states (fixtures), background session without reload, compact weekly review and Home/Reports two-way sync (fixtures), original OCR/VN/chat menus, seeded login, API create and UI read/edit/delete/Undo, persistence after reload, report/game endpoints and profile XP.");
+  console.log("PASS: dynamic dev database badge, Monday-Sunday streak, check-in UI states (fixtures), background session without reload, compact weekly review and Home/Reports two-way sync (fixtures), original OCR/VN/chat menus, seeded login, API create and UI read/edit/delete/Undo, persistence after reload, report/game endpoints and profile hero level.");
  } catch(error){
   require("node:fs").mkdirSync("test-results",{recursive:true});
   await page.screenshot({path:"test-results/seed-api-browser-failure.png",fullPage:true});

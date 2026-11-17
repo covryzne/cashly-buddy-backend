@@ -58,14 +58,14 @@ def check_database(settings: Settings) -> dict:
 
 
 def upgrade_database(settings: Settings) -> None:
-    if settings.environment != "dev":
-        raise ConfigurationError("This Task 02 migration launcher supports dev only.")
+    if settings.environment not in {"dev", "staging"}:
+        raise ConfigurationError("This migration launcher supports dev/staging only.")
     verify_development_target(settings)
     try:
         command.upgrade(alembic_config(settings), "head")
     except Exception:
         raise ConfigurationError(
-            "Migration failed and was rolled back. Verify the development project, migration "
+            "Migration failed and was rolled back. Verify the selected project, migration "
             "URL, auth.users reference and DDL permissions locally. Details are omitted."
         ) from None
 
@@ -97,7 +97,7 @@ def verify_development_target(settings: Settings) -> None:
     except (ValueError, TypeError):
         raise ConfigurationError(
             "Migration target mismatch. Set SUPABASE_URL, DATABASE_URL and "
-            "MIGRATION_DATABASE_URL to the same isolated development project. Values are omitted."
+            "MIGRATION_DATABASE_URL to the same isolated dev/staging project. Values are omitted."
         ) from None
 
 

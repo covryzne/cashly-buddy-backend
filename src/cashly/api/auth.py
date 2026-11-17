@@ -118,7 +118,9 @@ async def password_action(request: Request, body: LoginRequest, *, register: boo
         # Run synchronous ORM work off the async event loop.
         from starlette.concurrency import run_in_threadpool
 
-        account = await run_in_threadpool(bootstrap, database, request.app.state.settings, identity)
+        account = await run_in_threadpool(
+            bootstrap, database, request.app.state.settings, identity, True
+        )
     except SQLAlchemyError:
         return AuthEnvelope(data=AuthData(status="account_pending", session=session))
     return AuthEnvelope(data=AuthData(status="authenticated", session=session, account=account))

@@ -13,6 +13,9 @@ class RuntimeContext(BaseModel):
 class AccountData(BaseModel):
     account_id: UUID
     display_name: str
+    username: str
+    password_login_enabled: bool
+    google_connected: bool
     email: str
     timezone: str
     theme_preference: str

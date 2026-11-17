@@ -47,8 +47,8 @@ else:
     if settings is None and "connection" not in config.attributes:
         settings = Settings.from_selection(resolve_environment())
     if settings is not None:
-        if settings.environment != "dev":
-            raise ConfigurationError("Task 02 online Alembic operations support dev only.")
+        if settings.environment not in {"dev", "staging"}:
+            raise ConfigurationError("Online Alembic operations support dev/staging only.")
         verify_development_target(settings)
     engine = None
     supplied = config.attributes.get("connection")
