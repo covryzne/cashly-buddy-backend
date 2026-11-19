@@ -1,0 +1,9 @@
+.git
+.env*
+.venv
+node_modules
+.pytest*
+.ruff_cache
+.cashly-*
+**/__pycache__
+tests

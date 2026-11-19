@@ -40,6 +40,21 @@ def test_url_normalization_and_tls_default():
     assert url.query["sslmode"] == "require"
 
 
+def test_docker_desktop_database_without_tls_is_dev_runtime_only():
+    dsn = "postgresql://u:p@host.docker.internal:54322/postgres?sslmode=disable"
+    dev = Settings(environment="dev", database_url=dsn, migration_database_url=dsn)
+    engine = build_engine(dev)
+    try:
+        assert engine.url.host == "host.docker.internal"
+        assert engine.url.query["sslmode"] == "disable"
+    finally:
+        engine.dispose()
+    with pytest.raises(ConfigurationError):
+        build_engine(dev, migration=True)
+    with pytest.raises(ConfigurationError):
+        build_engine(Settings(environment="staging", database_url=dsn))
+
+
 def test_runtime_pool_and_migration_nullpool_do_not_connect():
     settings = Settings(
         environment="dev",
@@ -160,6 +175,7 @@ def test_database_transaction_sets_local_trusted_context():
     account_id, auth_user_id = uuid4(), uuid4()
     with (
         patch("cashly.db.connection.build_engine"),
+        patch("cashly.db.connection.instrument_engine"),
         patch("cashly.db.connection.sessionmaker") as sm,
     ):
         db = Database(Settings(environment="dev"))

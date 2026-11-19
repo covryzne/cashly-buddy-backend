@@ -41,7 +41,11 @@ def load_account(session: Session, identity: Identity) -> tuple[Account, Profile
 def runtime_context(settings: Settings) -> RuntimeContext | None:
     if settings.database_url is None:
         return None
-    local = database_url(settings.database_url).host in {"127.0.0.1", "localhost", "::1"}
+    dev = settings.environment == "dev"
+    url = database_url(settings.database_url, allow_docker_dev=dev)
+    local = url.host in {"127.0.0.1", "localhost", "::1"} or (
+        dev and url.host == "host.docker.internal" and url.port == 54322
+    )
     return RuntimeContext(
         environment=settings.environment,
         database_kind="local" if local else "hosted",

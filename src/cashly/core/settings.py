@@ -3,7 +3,15 @@ from collections.abc import Mapping
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+)
 
 from cashly.core.environment import ConfigurationError, EnvironmentSelection
 from cashly.schemas.ai_routing import FallbackModel
@@ -80,11 +88,15 @@ class Settings(BaseModel):
 
     @field_validator("supabase_url")
     @classmethod
-    def validate_auth_authority(cls, value: str | None) -> str | None:
+    def validate_auth_authority(cls, value: str | None, info: ValidationInfo) -> str | None:
         if value is None:
             return None
         parsed = urlsplit(value)
-        local = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        local = parsed.hostname in {"localhost", "127.0.0.1", "::1"} or (
+            info.data.get("environment") == "dev"
+            and parsed.hostname == "host.docker.internal"
+            and parsed.port == 54321
+        )
         if (
             not parsed.hostname
             or parsed.username

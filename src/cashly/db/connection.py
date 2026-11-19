@@ -15,7 +15,7 @@ from cashly.core.performance import instrument_engine, performance
 from cashly.core.settings import Settings
 
 
-def database_url(secret: SecretStr | None) -> URL:
+def database_url(secret: SecretStr | None, *, allow_docker_dev: bool = False) -> URL:
     if secret is None:
         raise ConfigurationError("Database URL is not configured.")
     try:
@@ -29,7 +29,12 @@ def database_url(secret: SecretStr | None) -> URL:
             raise ValueError
         if url.port == 6543:
             raise ValueError
-        local = url.host in {"localhost", "127.0.0.1", "::1"}
+        local = url.host in {"localhost", "127.0.0.1", "::1"} or (
+            allow_docker_dev
+            and url.host == "host.docker.internal"
+            and url.port == 54322
+            and url.database == "postgres"
+        )
         mode = url.query.get("sslmode", "require")
         if not local and mode not in {"require", "verify-ca", "verify-full"}:
             raise ValueError
@@ -45,7 +50,7 @@ def database_url(secret: SecretStr | None) -> URL:
 
 def build_engine(settings: Settings, *, migration: bool = False) -> Engine:
     secret = settings.migration_database_url if migration else settings.database_url
-    url = database_url(secret)
+    url = database_url(secret, allow_docker_dev=settings.environment == "dev" and not migration)
     options = {
         "echo": False,
         "hide_parameters": True,

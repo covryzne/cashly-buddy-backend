@@ -104,7 +104,13 @@ def configuration(request: Request) -> AuthConfiguration:
     return AuthConfiguration(
         supabase_url=url,
         publishable_key=key,
-        local=urlsplit(url).hostname in {"localhost", "127.0.0.1", "::1"},
+        local=(
+            urlsplit(url).hostname in {"localhost", "127.0.0.1", "::1"}
+            or (
+                request.app.state.settings.environment == "dev"
+                and url == "http://host.docker.internal:54321"
+            )
+        ),
     )
 
 

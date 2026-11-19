@@ -180,3 +180,10 @@ def test_settings_hide_secrets_and_allow_empty_future_connections():
     settings = Settings.from_values({"CASHLY_ENV": "dev", "DATABASE_URL": "private-secret"})
     assert "private-secret" not in repr(settings)
     assert Settings.from_values({"CASHLY_ENV": "dev", "DATABASE_URL": ""}).database_url is None
+
+
+def test_docker_desktop_auth_http_is_dev_only():
+    values = {"CASHLY_ENV": "dev", "SUPABASE_URL": "http://host.docker.internal:54321"}
+    assert Settings.from_values(values).supabase_url == values["SUPABASE_URL"]
+    with pytest.raises(ConfigurationError):
+        Settings.from_values({**values, "CASHLY_ENV": "staging"})

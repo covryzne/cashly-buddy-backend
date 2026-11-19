@@ -1,0 +1,25 @@
+name: cashly-backend-staging
+services:
+  backend:
+    image: cashly-backend:${CASHLY_IMAGE_TAG:-local}
+    build:
+      context: .
+    env_file: ./.env.staging
+    environment:
+      CASHLY_ENV: staging
+      CASHLY_ENV_SOURCE: system
+      HOST: 0.0.0.0
+      PORT: "8000"
+    healthcheck:
+      test: [CMD, python, -c, "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3).close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
+    restart: unless-stopped
+    networks: [cashly]
+
+networks:
+  cashly:
+    name: cashly-staging
+    external: true
