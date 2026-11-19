@@ -60,7 +60,7 @@ def normalize_audio(audio: VoiceAudio):
     try:
         raw = base64.b64decode(audio.data, validate=True)
         if len(raw) > MAX_AUDIO_BYTES:
-            raise ApiError(413, "AUDIO_TOO_LARGE", "Ukuran audio maksimal 5 MB.")
+            raise ApiError(413, "AUDIO_TOO_LARGE", "Ukuran audio maksimal 10 MB.")
         signature = (
             "wav"
             if raw[:4] == b"RIFF" and raw[8:12] == b"WAVE"
@@ -101,7 +101,7 @@ def normalize_audio(audio: VoiceAudio):
                 for frame in frames:
                     pcm.extend(bytes(frame.planes[0])[: frame.samples * 2])
                     if len(pcm) / 32000 > MAX_AUDIO_SECONDS:
-                        raise audio_failure("AUDIO_TOO_LONG", "Durasi audio maksimal 60 detik.")
+                        raise audio_failure("AUDIO_TOO_LONG", "Durasi audio maksimal 5 menit.")
 
             for frame in container.decode(stream):
                 if perf_counter() - started > 5:
@@ -122,9 +122,9 @@ def normalize_audio(audio: VoiceAudio):
                         frame.time - first_time + frame.samples / frame.sample_rate
                         > MAX_AUDIO_SECONDS
                     ):
-                        raise audio_failure("AUDIO_TOO_LONG", "Durasi audio maksimal 60 detik.")
+                        raise audio_failure("AUDIO_TOO_LONG", "Durasi audio maksimal 5 menit.")
                 if samples > MAX_AUDIO_SECONDS:
-                    raise audio_failure("AUDIO_TOO_LONG", "Durasi audio maksimal 60 detik.")
+                    raise audio_failure("AUDIO_TOO_LONG", "Durasi audio maksimal 5 menit.")
                 append(resampler.resample(frame))
             append(resampler.resample(None))
         duration = len(pcm) / 32000
@@ -138,7 +138,7 @@ def normalize_audio(audio: VoiceAudio):
         if max(abs(value) for value in values) < 4:
             raise audio_failure(
                 "AUDIO_NO_SPEECH",
-                "Rekaman terdengar hening. Rekam ulang atau tulis transkrip sendiri.",
+                "Rekaman terdengar hening. Rekam ulang di tempat yang lebih tenang.",
             )
         output = BytesIO()
         with wave.open(output, "wb") as writer:

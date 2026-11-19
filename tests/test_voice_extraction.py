@@ -103,9 +103,21 @@ def test_browser_formats_decode_to_bounded_wav(format):
         ) == (1, 2, 16000)
 
 
+def test_audio_longer_than_one_minute_can_be_transcribed(monkeypatch):
+    with provider(content=gemini_response(transcript())) as (url, calls):
+        monkeypatch.setattr("cashly.services.chat_extraction.GEMINI_BASE_URL", url)
+        with client_for(monkeypatch, gemini_api_key=SecretStr("fake")) as client:
+            response = client.post(
+                "/api/v1/voice/transcribe", json={"audio": encoded_audio(seconds=61)}
+            )
+    assert response.status_code == 200
+    assert response.json()["data"]["duration_seconds"] == 61
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize(
     "seconds,silent,code",
-    [(61, False, "AUDIO_TOO_LONG"), (0.1, False, "AUDIO_TOO_SHORT"), (1, True, "AUDIO_NO_SPEECH")],
+    [(301, False, "AUDIO_TOO_LONG"), (0.1, False, "AUDIO_TOO_SHORT"), (1, True, "AUDIO_NO_SPEECH")],
 )
 def test_real_decoded_duration_and_silence(seconds, silent, code):
     with pytest.raises(ApiError) as error:

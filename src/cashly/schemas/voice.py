@@ -6,10 +6,10 @@ from pydantic import Field, model_validator
 
 from cashly.schemas.extraction import ChatExtractInput, StrictModel
 
-MAX_AUDIO_BYTES = 5 * 1024 * 1024
+MAX_AUDIO_BYTES = 10 * 1024 * 1024
 MAX_AUDIO_ENCODED = 4 * ((MAX_AUDIO_BYTES + 2) // 3)
 MAX_AUDIO_REQUEST = MAX_AUDIO_ENCODED + 8192
-MAX_AUDIO_SECONDS = 60.5  # Browser encoder padding is allowed; UI records at most 60 seconds.
+MAX_AUDIO_SECONDS = 300.5  # Five minutes of speech plus browser encoder padding.
 
 
 class VoiceAudio(StrictModel):
