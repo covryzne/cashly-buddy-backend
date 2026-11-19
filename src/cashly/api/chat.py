@@ -86,13 +86,13 @@ async def transcribe_voice(request: Request, identity: VerifiedIdentity):
         payload = bytearray()
         async for chunk in request.stream():
             if len(payload) + len(chunk) > MAX_AUDIO_REQUEST:
-                raise ApiError(413, "AUDIO_TOO_LARGE", "Ukuran audio maksimal 5 MB.")
+                raise ApiError(413, "AUDIO_TOO_LARGE", "Ukuran audio maksimal 10 MB.")
             payload.extend(chunk)
         try:
             body = VoiceTranscribeInput.model_validate_json(payload)
         except ValidationError:
             raise ApiError(
-                422, "INVALID_AUDIO_INPUT", "Audio tidak valid atau melebihi 5 MB."
+                422, "INVALID_AUDIO_INPUT", "Audio tidak valid atau melebihi 10 MB."
             ) from None
         del payload
         started = perf_counter()
