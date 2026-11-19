@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from cashly.api.accounts import VerifiedIdentity, database
 from cashly.db.models import ExpenseCategory, IdempotencyRecord
+from cashly.schemas.chat import ChatBatchEnvelope, ChatBatchInput
 from cashly.schemas.finance import (
     DeleteEnvelope,
     ExpenseEnvelope,
@@ -20,9 +21,15 @@ from cashly.schemas.finance import (
 )
 from cashly.services import finance, gamification
 from cashly.services.accounts import account_data, load_account
+from cashly.services.chat_recording import record_batch
 
 router = APIRouter(tags=["Finance"])
 Key = Annotated[str, Header(alias="Idempotency-Key", min_length=8, max_length=128)]
+
+
+@router.post("/expenses/chat-batch", status_code=201, response_model=ChatBatchEnvelope)
+def create_chat_batch(request: Request, identity: VerifiedIdentity, body: ChatBatchInput, key: Key):
+    return record_batch(database(request), identity, body, key)
 
 
 @router.get("/expenses", response_model=ExpenseList)
@@ -105,7 +112,6 @@ def preferences(request: Request, identity: VerifiedIdentity, body: PreferencesI
 
 
 @router.get("/gamification/overview", response_model=GameEnvelope)
-@router.get("/gamification/missions", response_model=GameEnvelope)
 @router.get("/gamification/streak/calendar", response_model=GameEnvelope)
 def game(request: Request, identity: VerifiedIdentity):
     with database(request).transaction(auth_user_id=identity.user_id) as session:
@@ -119,7 +125,6 @@ def game(request: Request, identity: VerifiedIdentity):
 
 @router.get("/reports/summary")
 @router.get("/reports/trend")
-@router.get("/reports/weekly-story")
 def report(
     request: Request,
     identity: VerifiedIdentity,
@@ -182,11 +187,6 @@ def no_spend(request: Request, identity: VerifiedIdentity, key: Key):
 @router.post("/gamification/checkins/review", response_model=GameEnvelope)
 def daily_review(request: Request, identity: VerifiedIdentity, key: Key):
     return game_action(request, identity, "review", key)
-
-
-@router.post("/reports/weekly-story/complete", response_model=GameEnvelope)
-def weekly_review(request: Request, identity: VerifiedIdentity, key: Key):
-    return game_action(request, identity, "weekly", key)
 
 
 @router.post("/gamification/streak/freeze", response_model=GameEnvelope)

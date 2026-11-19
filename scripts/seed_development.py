@@ -1,22 +1,24 @@
-"""Create one local development login and populate its expense/game scenario."""
+"""Seed one dev/staging account; hosted accounts register through the Cashly form."""
 
+import getpass
 import json
 import os
 import secrets
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import httpx2
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from cashly.core.auth import Identity
-from cashly.core.environment import PROJECT_ROOT, resolve_environment
+from cashly.core.environment import PROJECT_ROOT, ConfigurationError, resolve_environment
 from cashly.core.settings import Settings
-from cashly.db.commands import check_database
-from cashly.db.connection import Database
-from cashly.db.local_data import local_data, verify_local_target
+from cashly.db.commands import check_database, verify_development_target
+from cashly.db.connection import Database, build_engine, database_url
+from cashly.db.local_data import CATEGORIES, verify_local_target
 from cashly.db.models import IdempotencyRecord
 from cashly.main import create_app
 from cashly.schemas.finance import ExpenseInput
@@ -100,83 +102,151 @@ def seed_scenario(db, identity):
         }
 
 
-def main():
-    import argparse
+class SeedError(Exception):
+    """Safe, actionable operator message without credentials/provider details."""
 
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--env-source", choices=["file", "system"], default="file")
-    args = parser.parse_args()
-    settings = Settings.from_selection(
-        resolve_environment(override="dev", source_override=args.env_source)
-    )
-    verify_local_target(settings)
-    if not check_database(settings)["schema_current"]:
-        raise RuntimeError("Apply python -m cashly db-upgrade first")
-    local_data(settings, "seed-reference")
-    if CREDENTIALS.exists():
-        credentials = json.loads(CREDENTIALS.read_text(encoding="utf-8"))
+
+def verify_seed_target(settings):
+    if settings.environment not in {"dev", "staging"}:
+        raise ConfigurationError("Seeder supports dev/staging only.")
+    loopback = {"127.0.0.1", "localhost", "::1"}
+    hosts = [urlsplit(settings.supabase_url or "").hostname]
+    hosts += [
+        database_url(secret).host
+        for secret in (settings.database_url, settings.migration_database_url)
+    ]
+    if any(host in loopback for host in hosts):
+        verify_local_target(settings)
     else:
-        credentials = {
-            "email": os.environ.get("DEV_SEED_EMAIL", "developer@cashly.test"),
-            "password": os.environ.get("DEV_SEED_PASSWORD") or secrets.token_urlsafe(8) + "Aa1!",
-        }
-        # Save before provisioning so a failed operation can resume with the same login.
-        descriptor = os.open(CREDENTIALS, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as file:
-            json.dump(credentials, file, indent=2)
+        verify_development_target(settings)
+
+
+def seed_reference(settings):
+    """Add missing categories only. Never reset or modify existing categories."""
+    engine = build_engine(settings, migration=True)
+    try:
+        with engine.begin() as conn:
+            for order, (code, label) in enumerate(CATEGORIES, 1):
+                conn.execute(
+                    text(
+                        "INSERT INTO cashly.expense_categories(code,label_id,sort_order) "
+                        "VALUES (:code,:label,:order) ON CONFLICT (code) DO NOTHING"
+                    ),
+                    {"code": code, "label": label, "order": order},
+                )
+    finally:
+        engine.dispose()
+
+
+def seed_account(settings, credentials, *, allow_create=False):
+    """Use normal password auth, preserving hosted signup/email verification."""
     with TestClient(create_app(settings)) as api:
         login = api.post("/api/v1/auth/login", json=credentials)
-        if login.status_code == 401:
+        if login.status_code == 401 and allow_create:
             registered = api.post(
                 "/api/v1/auth/register", json={**credentials, "name": "Developer Cashly"}
             )
             if registered.status_code != 201:
-                raise RuntimeError(
-                    "Cannot provision local account; check existing login/configuration"
-                )
+                raise SeedError("Register through the Cashly form and verify email, then rerun.")
             login = api.post("/api/v1/auth/login", json=credentials)
         if login.status_code != 200:
-            raise RuntimeError("Local development login failed")
+            if login.status_code in {401, 403}:
+                raise SeedError(
+                    "Login failed. Create the account through the Cashly form, verify email "
+                    "and check the password, then rerun the seeder."
+                )
+            raise SeedError("Login unavailable. Check Auth configuration and retry later.")
         token = login.json()["data"]["session"]["access_token"]
-        with httpx2.Client(timeout=15, trust_env=False) as client:
-            verified = client.get(
-                settings.supabase_url + "/auth/v1/user",
-                headers={
-                    "apikey": settings.supabase_publishable_key.get_secret_value(),
-                    "Authorization": f"Bearer {token}",
-                },
-            )
-            if verified.status_code != 200:
-                raise RuntimeError("Local identity verification failed")
-            user = verified.json()
-        identity = Identity(
-            UUID(user["id"]),
-            user["email"],
-            "Developer Cashly",
-            datetime.fromisoformat(user["email_confirmed_at"].replace("Z", "+00:00")),
-        )
-        db = Database(settings)
+        headers = {
+            "apikey": settings.supabase_publishable_key.get_secret_value(),
+            "Authorization": f"Bearer {token}",
+        }
         try:
-            result = seed_scenario(db, identity)
-        finally:
-            db.dispose()
-        api.post("/api/v1/auth/bootstrap", headers={"Authorization": f"Bearer {token}"})
-        # Close the CLI login session; frontend will establish its own normal session.
-        with httpx2.Client(timeout=15, trust_env=False) as client:
-            client.post(
-                settings.supabase_url + "/auth/v1/logout?scope=local",
-                headers={
-                    "apikey": settings.supabase_publishable_key.get_secret_value(),
-                    "Authorization": f"Bearer {token}",
-                },
+            with httpx2.Client(timeout=15, trust_env=False) as client:
+                verified = client.get(settings.supabase_url + "/auth/v1/user", headers=headers)
+                if verified.status_code != 200:
+                    raise SeedError("Identity verification failed; no scenario was seeded.")
+                user = verified.json()
+            if user.get("email", "").casefold() != credentials["email"].casefold() or not user.get(
+                "email_confirmed_at"
+            ):
+                raise SeedError("Verified identity/email mismatch; no scenario was seeded.")
+            identity = Identity(
+                UUID(user["id"]),
+                user["email"],
+                "Developer Cashly",
+                datetime.fromisoformat(user["email_confirmed_at"].replace("Z", "+00:00")),
             )
+            prepared = api.post("/api/v1/auth/bootstrap", headers=headers)
+            if prepared.status_code != 200:
+                raise SeedError(
+                    "Account preparation failed. Check schema/runtime grants and retry."
+                )
+            seed_reference(settings)
+            db = Database(settings)
+            try:
+                return seed_scenario(db, identity)
+            finally:
+                db.dispose()
+        finally:
+            # Retire only the script's login; existing browser sessions stay active.
+            try:
+                with httpx2.Client(timeout=15, trust_env=False) as client:
+                    client.post(
+                        settings.supabase_url + "/auth/v1/logout?scope=local", headers=headers
+                    )
+            except httpx2.HTTPError:
+                pass
+
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--env", choices=["dev", "staging"], default="dev")
+    parser.add_argument("--env-source", choices=["file", "system"], default="file")
+    parser.add_argument("--email", help="Existing form account; password is prompted privately.")
+    args = parser.parse_args()
+    settings = Settings.from_selection(
+        resolve_environment(override=args.env, source_override=args.env_source)
+    )
+    verify_seed_target(settings)
+    if not check_database(settings)["schema_current"]:
+        raise SeedError("Apply python -m cashly db-upgrade for the selected environment first.")
+    print(f"[Cashly] seeder environment={settings.environment} source={args.env_source}")
+    legacy_local = (
+        not args.email
+        and settings.environment == "dev"
+        and (urlsplit(settings.supabase_url or "").hostname in {"127.0.0.1", "localhost", "::1"})
+    )
+    if legacy_local:
+        if CREDENTIALS.exists():
+            credentials = json.loads(CREDENTIALS.read_text(encoding="utf-8"))
+        else:
+            credentials = {
+                "email": os.environ.get("DEV_SEED_EMAIL", "developer@cashly.test"),
+                "password": os.environ.get("DEV_SEED_PASSWORD")
+                or secrets.token_urlsafe(8) + "Aa1!",
+            }
+            descriptor = os.open(CREDENTIALS, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+                json.dump(credentials, file, indent=2)
+    else:
+        if not args.email:
+            raise SeedError("Use --email for an existing verified form account on hosted Supabase.")
+        credentials = {
+            "email": args.email.strip(),
+            "password": getpass.getpass("Cashly password: "),
+        }
+    result = seed_account(settings, credentials, allow_create=legacy_local)
     print(
         json.dumps(
             {
                 "seeded": True,
+                "environment": settings.environment,
                 "already_seeded": result["already_seeded"],
-                "credentials_file": CREDENTIALS.name,
                 "hero_level": result["gamification"]["hero_level"],
+                **({"credentials_file": CREDENTIALS.name} if legacy_local else {}),
             }
         )
     )
@@ -185,9 +255,12 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except (SeedError, ConfigurationError) as error:
+        print(f"[Cashly] {error}")
+        raise SystemExit(1) from None
     except Exception as error:
-        # Never expose DB/HTTP exceptions or credential bodies on the terminal.
         print(
-            f"[Cashly] Seeder failed ({type(error).__name__}); check local services/configuration."
+            f"[Cashly] Seeder failed ({type(error).__name__}); "
+            "check selected services/configuration."
         )
         raise SystemExit(1) from None

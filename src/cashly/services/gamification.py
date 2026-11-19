@@ -7,13 +7,18 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from cashly.core.errors import ApiError
-from cashly.core.settings import Settings
-from cashly.db.connection import database_url
 from cashly.db.models import Expense, GameEvent, StreakProtection
 
 
 def events(session, account_id):
-    return list(session.scalars(select(GameEvent).where(GameEvent.account_id == account_id)))
+    return list(
+        session.execute(
+            select(GameEvent.kind, GameEvent.local_date).where(
+                GameEvent.account_id == account_id,
+                GameEvent.kind.in_(("checkin", "freeze_spent")),
+            )
+        )
+    )
 
 
 def record(session: Session, account_id, timezone, key, kind, day, xp=0, freeze=0):
@@ -56,20 +61,6 @@ def streaks(active: set[date], protected: set[date], day: date):
         current += int(cursor in active)
         cursor -= timedelta(days=1)
     return current, longest
-
-
-def weekly_test_override(settings: Settings | None) -> bool:
-    return bool(
-        settings
-        and settings.environment == "dev"
-        and settings.weekly_review_test_mode
-        and settings.database_url
-        and database_url(settings.database_url).host in {"127.0.0.1", "localhost", "::1"}
-        and not any(
-            name in database_url(settings.database_url).query
-            for name in ("host", "hostaddr", "service")
-        )
-    )
 
 
 def recovery_dates(active, protected, day):
@@ -119,8 +110,6 @@ def overview(session, account_id, timezone, day=None, settings=None):
             "streak_after_recovery": after,
         }
     week = day - timedelta(days=day.weekday())
-    weekend = day.weekday() >= 5
-    test_override = weekly_test_override(settings) and not weekend
     return {
         "hero_level": hero_level(current),
         "current_streak": current,
@@ -151,14 +140,6 @@ def overview(session, account_id, timezone, day=None, settings=None):
         ],
         "missions": [
             {"code": "daily", "title": "Check-in hari ini", "completed": day in active},
-            {
-                "code": "weekly",
-                "title": "Review cerita mingguan",
-                "completed": any(e.event_key == f"weekly:{week}" for e in ledger),
-                "can_complete": weekend or test_override,
-                "available_from": str(week + timedelta(days=5)),
-                "test_override": test_override,
-            },
         ],
     }
 
@@ -175,6 +156,8 @@ def on_expense(session, account_id, timezone, occurred_at):
 
 
 def action(session, account_id, timezone, kind, protected_date=None, settings=None):
+    if kind not in {"freeze", "review", "no-spend"}:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "Aksi streak tidak tersedia.")
     day = today(timezone)
     if kind == "freeze":
         requested = sorted(set(protected_date or []))
@@ -224,25 +207,6 @@ def action(session, account_id, timezone, kind, protected_date=None, settings=No
                 .limit(1)
             ):
                 raise ApiError(409, "NO_SPEND_CONFLICT", "Hari ini sudah ada pengeluaran.")
-        if kind == "weekly":
-            if day.weekday() < 5 and not weekly_test_override(settings):
-                raise ApiError(
-                    409, "WEEKLY_REVIEW_NOT_AVAILABLE", "Review tersedia pada Sabtu dan Minggu."
-                )
-            week = day - timedelta(days=day.weekday())
-            start = datetime.combine(week, datetime.min.time(), ZoneInfo(timezone))
-            if not session.scalar(
-                select(Expense.id)
-                .where(
-                    Expense.account_id == account_id,
-                    Expense.deleted_at.is_(None),
-                    Expense.occurred_at >= start,
-                    Expense.occurred_at <= datetime.now(UTC),
-                )
-                .limit(1)
-            ):
-                raise ApiError(409, "REVIEW_EMPTY", "Belum ada transaksi minggu ini.")
-            record(session, account_id, timezone, f"weekly:{week}", "weekly_review", day)
         checkin(session, account_id, timezone)
     session.flush()
     return overview(session, account_id, timezone, settings=settings)

@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime
+from time import perf_counter
 from typing import Annotated
 from uuid import UUID
 
@@ -10,6 +11,7 @@ from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from cashly.core.errors import ApiError
+from cashly.core.performance import performance
 
 
 @dataclass(frozen=True)
@@ -44,13 +46,19 @@ async def verify_access_token(request: Request, token: str) -> Identity:
     try:
         # getUser validates this access token at the Auth authority. Never decode an
         # unverified JWT and use its `sub`, roles, email or account ID as authority.
-        response = await request.app.state.auth_http.get(
-            settings.supabase_url.rstrip("/") + "/auth/v1/user",
-            headers={
-                "apikey": settings.supabase_publishable_key.get_secret_value(),
-                "Authorization": f"Bearer {token}",
-            },
-        )
+        started = perf_counter()
+        try:
+            response = await request.app.state.auth_http.get(
+                settings.supabase_url.rstrip("/") + "/auth/v1/user",
+                headers={
+                    "apikey": settings.supabase_publishable_key.get_secret_value(),
+                    "Authorization": f"Bearer {token}",
+                },
+            )
+        finally:
+            metrics = performance.get()
+            if metrics is not None:
+                metrics.auth_ms += (perf_counter() - started) * 1000
     except httpx2.HTTPError:
         raise HTTPException(503) from None
     if response.status_code in {401, 403}:

@@ -11,6 +11,7 @@ dependencies = [
     "fastapi==0.163.1", "uvicorn==0.54.0", "pydantic==2.14.3", "python-dotenv==1.2.4",
     "SQLAlchemy==2.0.57", "alembic==1.20.1", "psycopg[binary]==3.3.9",
     "httpx2==2.16.0",
+    "google-genai==3.4.0",
 ]
 
 [project.optional-dependencies]

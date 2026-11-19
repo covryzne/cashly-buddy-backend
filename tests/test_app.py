@@ -134,20 +134,19 @@ def test_runtime_openapi_does_not_claim_unimplemented_endpoints(app):
         "/api/v1/auth/password/reset/start",
         "/api/v1/auth/password/reset/cancel",
         "/api/v1/expenses",
+        "/api/v1/chat/extract",
+        "/api/v1/expenses/chat-batch",
         "/api/v1/expenses/{identifier}",
         "/api/v1/expenses/{identifier}/restore",
         "/api/v1/categories",
         "/api/v1/me/preferences",
         "/api/v1/gamification/overview",
-        "/api/v1/gamification/missions",
         "/api/v1/gamification/streak/calendar",
         "/api/v1/gamification/checkins/no-spend",
         "/api/v1/gamification/checkins/review",
         "/api/v1/gamification/streak/freeze",
         "/api/v1/reports/summary",
         "/api/v1/reports/trend",
-        "/api/v1/reports/weekly-story",
-        "/api/v1/reports/weekly-story/complete",
     }
     assert "HealthEnvelope" in schema["components"]["schemas"]
 

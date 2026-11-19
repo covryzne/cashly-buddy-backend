@@ -1,6 +1,7 @@
 from uuid import uuid4
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from cashly.core.auth import Identity
@@ -21,10 +22,17 @@ def load_account(session: Session, identity: Identity) -> tuple[Account, Profile
     if link is None:
         raise HTTPException(409)
     set_account_context(session, link.account_id)
-    account = session.get(Account, link.account_id)
+    # Account context is set before reading either RLS-protected table.
+    # Fetch the profile with its account rather than another network round trip.
+    row = session.execute(
+        select(Account, Profile)
+        .outerjoin(Profile, Profile.account_id == Account.id)
+        .where(Account.id == link.account_id)
+    ).one_or_none()
+    account = row[0] if row else None
     if account is None or account.status != "active":
         raise HTTPException(403)
-    profile = session.get(Profile, account.id)
+    profile = row[1]
     if profile is None:
         raise HTTPException(409)
     return account, profile

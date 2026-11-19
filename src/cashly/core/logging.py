@@ -14,7 +14,36 @@ class JsonFormatter(logging.Formatter):
             "level": record.levelname,
             "event": record.getMessage(),
         }
-        for key in ("request_id", "method", "route", "status", "duration_ms", "exception_type"):
+        for key in (
+            "request_id",
+            "method",
+            "route",
+            "status",
+            "duration_ms",
+            "auth_ms",
+            "db_ms",
+            "db_queries",
+            "db_slowest_ms",
+            "db_connect_ms",
+            "exception_type",
+            "provider",
+            "model",
+            "model_version",
+            "thinking_level",
+            "upstream_status",
+            "provider_error_status",
+            "provider_error_reason",
+            "transport",
+            "api_version",
+            "resolved_model",
+            "upstream_provider",
+            "provider_error_code",
+            "requested_provider",
+            "fallback_reason",
+            "endpoint",
+            "attempt",
+            "outcome",
+        ):
             if hasattr(record, key):
                 entry[key] = getattr(record, key)
         return json.dumps(entry, ensure_ascii=True)
@@ -59,8 +88,43 @@ class TerminalFormatter(logging.Formatter):
             result = self.paint(status, code)
             duration = self.paint(f"{getattr(record, 'duration_ms', 0):.2f} ms", "90")
             request_id = self.paint(f"rid={getattr(record, 'request_id', '-')}", "90")
-            return f"{prefix} {method} {route}  {result}  {duration}  {request_id}"
+            insight = " ".join(
+                f"{key}={getattr(record, key):.2f}"
+                for key in ("auth_ms", "db_ms", "db_connect_ms", "db_slowest_ms")
+                if hasattr(record, key)
+            )
+            queries = f" queries={record.db_queries}" if hasattr(record, "db_queries") else ""
+            return (
+                f"{prefix} {method} {route}  {result}  {duration}  {insight}{queries}  {request_id}"
+            )
         event = self.paint(record.getMessage(), severity)
+        if record.getMessage().startswith(("ai_extraction_", "ai_provider_")):
+            fields = " ".join(
+                f"{key}={self.paint(getattr(record, key), '90')}"
+                for key in (
+                    "provider",
+                    "model",
+                    "model_version",
+                    "thinking_level",
+                    "upstream_status",
+                    "provider_error_status",
+                    "provider_error_reason",
+                    "transport",
+                    "api_version",
+                    "resolved_model",
+                    "upstream_provider",
+                    "provider_error_code",
+                    "requested_provider",
+                    "fallback_reason",
+                    "endpoint",
+                    "exception_type",
+                    "attempt",
+                    "outcome",
+                    "duration_ms",
+                )
+                if hasattr(record, key)
+            )
+            return f"{prefix} {event} {fields} rid={getattr(record, 'request_id', '-')}"
         kind = self.paint(getattr(record, "exception_type", ""), "31")
         request_id = self.paint(f"rid={getattr(record, 'request_id', '-')}", "90")
         return f"{prefix} {event} {kind} {request_id}".rstrip()

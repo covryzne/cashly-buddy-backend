@@ -26,10 +26,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.auth_http = httpx2.AsyncClient(
             timeout=10, follow_redirects=False, trust_env=False
         )
+        app.state.ai_http = httpx2.AsyncClient(
+            timeout=settings.gemini_timeout_seconds, follow_redirects=False, trust_env=False
+        )
+        app.state.chat_limits = {}
         try:
             yield
         finally:
             await app.state.auth_http.aclose()
+            await app.state.ai_http.aclose()
             if database is not None:
                 database.dispose()
 
@@ -54,7 +59,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_origins=list(settings.cors_origins),
         allow_credentials=False,
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
-        expose_headers=["X-Request-ID"],
+        allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Request-ID"],
+        expose_headers=["X-Request-ID", "Server-Timing"],
     )
     return app

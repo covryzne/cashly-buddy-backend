@@ -30,8 +30,36 @@ class Settings(BaseModel):
     db_connect_timeout: int = Field(default=10, ge=1, le=60)
     # Compatibility only: old env values no longer enable seeding in auth.
     dev_sample_data: bool = False
-    weekly_review_test_mode: bool = False
     daily_checkin_test_mode: bool = False
+    gemini_api_key: SecretStr | None = Field(default=None, repr=False)
+    gemini_model: str = Field(default="gemini-3.8-flash", pattern=r"^[a-zA-Z0-9._-]{1,100}$")
+    gemini_timeout_seconds: int = Field(default=35, ge=5, le=40)
+    gemini_thinking_level: Literal["auto", "low", "medium", "high"] = "low"
+    ai_provider: Literal["gemini", "openrouter"] = "gemini"
+    openrouter_api_key: SecretStr | None = Field(default=None, repr=False)
+    openrouter_model: str = Field(
+        default="openrouter/free", pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$"
+    )
+    openrouter_timeout_seconds: int = Field(default=35, ge=5, le=40)
+
+    @field_validator("ai_provider", mode="before")
+    @classmethod
+    def normalize_ai_provider(cls, value):
+        return (value.strip().lower() or "gemini") if isinstance(value, str) else value
+
+    @field_validator("gemini_api_key", "openrouter_api_key", mode="before")
+    @classmethod
+    def normalize_ai_key(cls, value):
+        raw = value.get_secret_value() if isinstance(value, SecretStr) else value
+        if isinstance(raw, str):
+            return raw.strip() or None
+        return value
+
+    @property
+    def effective_ai_provider(self) -> Literal["gemini", "openrouter"]:
+        if self.ai_provider == "openrouter" and self.openrouter_api_key is None:
+            return "gemini"
+        return self.ai_provider
 
     @field_validator("supabase_url")
     @classmethod
@@ -101,8 +129,15 @@ class Settings(BaseModel):
                 db_pool_timeout=values.get("DB_POOL_TIMEOUT", "10"),
                 db_connect_timeout=values.get("DB_CONNECT_TIMEOUT", "10"),
                 dev_sample_data=values.get("DEV_SAMPLE_DATA", "false"),
-                weekly_review_test_mode=values.get("WEEKLY_REVIEW_TEST_MODE", "false"),
                 daily_checkin_test_mode=values.get("DAILY_CHECKIN_TEST_MODE", "false"),
+                gemini_api_key=values.get("GEMINI_API_KEY") or None,
+                gemini_model=values.get("GEMINI_MODEL", "gemini-3.8-flash"),
+                gemini_timeout_seconds=values.get("GEMINI_TIMEOUT_SECONDS", "35"),
+                gemini_thinking_level=values.get("GEMINI_THINKING_LEVEL", "low"),
+                ai_provider=values.get("AI_PROVIDER", "gemini"),
+                openrouter_api_key=values.get("OPENROUTER_API_KEY") or None,
+                openrouter_model=values.get("OPENROUTER_MODEL", "openrouter/free"),
+                openrouter_timeout_seconds=values.get("OPENROUTER_TIMEOUT_SECONDS", "35"),
             )
         except (ValidationError, ValueError, TypeError):
             raise ConfigurationError(

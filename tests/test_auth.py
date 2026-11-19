@@ -676,7 +676,6 @@ def test_finance_api_crud_rewards_replay_and_ownership(auth_postgres_settings):
     with auth_authority(identities[0].user_id) as (authority, _):
         settings = auth_postgres_settings.model_copy(
             update={
-                "weekly_review_test_mode": True,
                 "supabase_url": authority,
                 "supabase_publishable_key": SecretStr("synthetic-key"),
             }
@@ -754,13 +753,13 @@ def test_finance_api_crud_rewards_replay_and_ownership(auth_postgres_settings):
                         ).status_code
                         == 409
                     )
-                    review = api.post("/api/v1/reports/weekly-story/complete", headers=headers)
-                    assert review.status_code == 200, review.text
-                    assert review.json()["data"]["hero_level"] == 1
                     assert (
-                        api.post("/api/v1/reports/weekly-story/complete", headers=headers).json()
-                        == review.json()
+                        api.post(
+                            "/api/v1/reports/weekly-story/complete", headers=headers
+                        ).status_code
+                        == 404
                     )
+                    assert [m["code"] for m in game["missions"]] == ["daily"]
                     deleted = api.delete(
                         f"/api/v1/expenses/{identifier}?version=2", headers=headers
                     )
@@ -954,48 +953,8 @@ def test_calendar_is_current_local_week_monday_to_sunday(auth_postgres_settings)
         db.dispose()
 
 
-def test_weekend_review_policy_and_local_test_override(auth_postgres_settings):
-    from datetime import date
-
-    from cashly.core.errors import ApiError
-    from cashly.services import finance, gamification
-
-    identity = Identity(uuid4(), "weekend@example.invalid", "Weekend Tester", datetime.now(UTC))
-    prepare(auth_postgres_settings, [identity])
-    db = runtime_database(auth_postgres_settings)
-    try:
-        account = bootstrap(db, auth_postgres_settings, identity)
-        with db.transaction(auth_user_id=identity.user_id) as session:
-            finance.locked_account(session, identity)
-            for day, allowed in [
-                (date(2026, 11, 20), False),
-                (date(2026, 11, 21), True),
-                (date(2026, 11, 22), True),
-                (date(2026, 11, 23), False),
-            ]:
-                result = gamification.overview(session, account.account_id, "Asia/Jakarta", day)
-                weekly = result["missions"][1]
-                assert weekly["can_complete"] is allowed
-                assert weekly["test_override"] is False
-            monday = date(2026, 11, 16)
-            with patch("cashly.services.gamification.today", return_value=monday):
-                with pytest.raises(ApiError) as blocked:
-                    gamification.action(session, account.account_id, "Asia/Jakarta", "weekly")
-                assert blocked.value.code == "WEEKLY_REVIEW_NOT_AVAILABLE"
-                settings = auth_postgres_settings.model_copy(
-                    update={"weekly_review_test_mode": True}
-                )
-                enabled = gamification.overview(
-                    session, account.account_id, "Asia/Jakarta", monday, settings
-                )
-                assert (
-                    enabled["missions"][1]["can_complete"]
-                    and enabled["missions"][1]["test_override"]
-                )
-                with pytest.raises(ApiError) as empty:
-                    gamification.action(
-                        session, account.account_id, "Asia/Jakarta", "weekly", settings=settings
-                    )
-                assert empty.value.code == "REVIEW_EMPTY"
-    finally:
-        db.dispose()
+def test_retired_weekly_routes_are_not_exposed():
+    with TestClient(create_app(Settings(environment="dev"))) as api:
+        for path in ("/api/v1/reports/weekly-story", "/api/v1/gamification/missions"):
+            assert api.get(path).status_code == 404
+        assert api.post("/api/v1/reports/weekly-story/complete").status_code == 404

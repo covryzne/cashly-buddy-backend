@@ -1,5 +1,6 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
+from time import perf_counter
 from uuid import UUID
 
 from pydantic import SecretStr
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
 
 from cashly.core.environment import ConfigurationError
+from cashly.core.performance import instrument_engine, performance
 from cashly.core.settings import Settings
 
 
@@ -69,6 +71,7 @@ def build_engine(settings: Settings, *, migration: bool = False) -> Engine:
 class Database:
     def __init__(self, settings: Settings):
         self.engine = build_engine(settings)
+        instrument_engine(self.engine)
         self._sessions = sessionmaker(self.engine, expire_on_commit=False, autoflush=False)
 
     @contextmanager
@@ -84,6 +87,11 @@ class Database:
         repository queries as well, especially when using an owner/BYPASSRLS role.
         """
         with self._sessions.begin() as session:
+            started = perf_counter()
+            session.connection()
+            metrics = performance.get()
+            if metrics is not None:
+                metrics.db_connect_ms += (perf_counter() - started) * 1000
             session.execute(
                 text(
                     "SELECT set_config('cashly.account_id', :account_id, true), "

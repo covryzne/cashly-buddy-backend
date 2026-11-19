@@ -30,21 +30,10 @@ def test_runtime_metadata_uses_database_target_without_secrets(environment, host
     assert "private" not in str(result) and "supabase" not in str(result)
 
 
-@pytest.mark.parametrize(
-    "environment,host,expected",
-    [
-        ("dev", "127.0.0.1", True),
-        ("staging", "127.0.0.1", False),
-        ("prod", "127.0.0.1", False),
-        ("dev", "db.example.supabase.co", False),
-    ],
-)
-def test_weekly_override_only_local_development(environment, host, expected):
-    from cashly.services.gamification import weekly_test_override
+def test_retired_weekly_action_is_rejected_before_database_access():
+    from cashly.core.errors import ApiError
+    from cashly.services.gamification import action
 
-    settings = Settings(
-        environment=environment,
-        weekly_review_test_mode=True,
-        database_url=SecretStr(f"postgresql://u:p@{host}/postgres"),
-    )
-    assert weekly_test_override(settings) is expected
+    with pytest.raises(ApiError) as error:
+        action(None, None, "Asia/Jakarta", "weekly")
+    assert error.value.status_code == 404
