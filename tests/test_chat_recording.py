@@ -140,3 +140,36 @@ def test_atomic_batch_replay_conflict_rollback_and_account_isolation(postgres_se
             )
     finally:
         db.dispose()
+
+
+def test_receipt_source_and_idempotent_confirmation(postgres_settings):
+    upgrade_database(postgres_settings)
+    db = Database(postgres_settings)
+    identity = Identity(uuid4(), "receipt@example.invalid", "Receipt Tester", datetime.now(UTC))
+    try:
+        with db.transaction() as session:
+            session.execute(
+                text("INSERT INTO auth.users(id) VALUES (:id)"), {"id": identity.user_id}
+            )
+        account = bootstrap(db, postgres_settings, identity)
+        receipt = {**record(), "source": "receipt"}
+        body = ChatBatchInput.model_validate({"records": [receipt]})
+        saved = record_batch(db, identity, body, "receipt-test")
+        assert saved == record_batch(db, identity, body, "receipt-test")
+        assert saved["data"][0]["source"] == "receipt"
+        with db.transaction(account_id=account.account_id) as session:
+            row = session.scalar(select(Expense).where(Expense.account_id == account.account_id))
+            assert row.source_type == "receipt"
+            assert row.source_message_id == f"receipt:{receipt['id']}"
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(Expense)
+                    .where(Expense.account_id == account.account_id)
+                )
+                == 1
+            )
+        with pytest.raises(ApiError):
+            record_batch(db, identity, body, "another-key")
+    finally:
+        db.dispose()

@@ -11,10 +11,24 @@ import httpx2
 from pydantic import ValidationError
 
 from cashly.core.errors import ApiError
-from cashly.schemas.chat import ModelExtraction
-from cashly.services.chat_extraction import SYSTEM_PROMPT, apply_extraction, invalid_result, logger
+from cashly.schemas.extraction import ModelExtraction
+from cashly.services.chat_extraction import (
+    RECEIPT_PROMPT,
+    SYSTEM_PROMPT,
+    apply_extraction,
+    invalid_result,
+    logger,
+)
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+
+def openrouter_schema():
+    schema = ModelExtraction.model_json_schema()
+    change = schema["$defs"]["ChatChange"]
+    change["required"] = list(change["properties"])
+    change["properties"]["source_total_idr"].pop("default", None)
+    return schema
 
 
 def provider_failure(status):
@@ -37,7 +51,9 @@ def provider_failure(status):
     return ApiError(503, "AI_UNAVAILABLE", "OpenRouter belum tersedia. Pesan dan draft tetap aman.")
 
 
-async def extract_openrouter_chat(settings, client, body, categories, timezone, request_id):
+async def extract_openrouter_chat(
+    settings, client, body, categories, timezone, request_id, media=None
+):
     if settings.openrouter_api_key is None:
         raise ApiError(
             503, "AI_NOT_CONFIGURED", "API key OpenRouter belum dikonfigurasi di server."
@@ -54,6 +70,7 @@ async def extract_openrouter_chat(settings, client, body, categories, timezone, 
     extra = {
         "request_id": request_id,
         "provider": "openrouter",
+        "input_kind": "receipt" if media else "chat",
         "model": settings.openrouter_model,
         "attempt": 1,
         "transport": "httpx2",
@@ -74,15 +91,33 @@ async def extract_openrouter_chat(settings, client, body, categories, timezone, 
                 json={
                     "model": settings.openrouter_model,
                     "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": json.dumps(context)},
+                        {
+                            "role": "system",
+                            "content": SYSTEM_PROMPT + (RECEIPT_PROMPT if media else ""),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                [
+                                    {"type": "text", "text": json.dumps(context)},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:{media.mime_type};base64,{media.data}"
+                                        },
+                                    },
+                                ]
+                                if media
+                                else json.dumps(context)
+                            ),
+                        },
                     ],
                     "response_format": {
                         "type": "json_schema",
                         "json_schema": {
                             "name": "cashly_expense_extraction",
                             "strict": True,
-                            "schema": ModelExtraction.model_json_schema(),
+                            "schema": openrouter_schema(),
                         },
                     },
                     "provider": {"require_parameters": True},

@@ -12,7 +12,12 @@ from cashly.services import finance, gamification
 
 
 def record_batch(db, identity, body, key):
-    fingerprint = hashlib.sha256(body.model_dump_json().encode()).hexdigest()
+    # Keep fingerprints of existing chat-only requests unchanged after adding source.
+    legacy_chat = all(record.source == "chat" for record in body.records)
+    encoded = body.model_dump_json(
+        exclude={"records": {"__all__": {"source"}}} if legacy_chat else None
+    )
+    fingerprint = hashlib.sha256(encoded.encode()).hexdigest()
     with db.transaction(auth_user_id=identity.user_id) as session:
         account, profile = finance.locked_account(session, identity)
         previous = session.scalar(
@@ -38,7 +43,7 @@ def record_batch(db, identity, body, key):
                 raise ApiError(
                     422, "FUTURE_EXPENSE", "Tanggal pengeluaran tidak boleh di masa depan."
                 )
-            source_id = f"chat:{record.id}"
+            source_id = f"{record.source}:{record.id}"
             existing = session.scalar(
                 select(Expense.id).where(
                     Expense.account_id == account.id,
@@ -57,7 +62,7 @@ def record_batch(db, identity, body, key):
                 id=uuid4(),
                 account_id=account.id,
                 source_platform="dashboard",
-                source_type="text",
+                source_type="receipt" if record.source == "receipt" else "text",
                 source_message_id=source_id,
                 source_item_index=0,
                 timestamp_basis="user_explicit",
