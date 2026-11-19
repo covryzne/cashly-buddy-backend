@@ -490,7 +490,11 @@ def test_real_http_read_timeout_logs_phase_without_retry_or_private_data(monkeyp
                 asyncio.run(run())
         assert error.value.code == "AI_TIMEOUT"
         assert len(calls) == 1
-        metadata = log.call_args.kwargs["extra"]
+        metadata = next(
+            call.kwargs["extra"]
+            for call in reversed(log.call_args_list)
+            if call.args[0] == "ai_extraction_completed"
+        )
         assert metadata["exception_type"] == "ReadTimeout"
         assert metadata["outcome"] == "timeout"
         assert "private-key" not in repr(metadata)

@@ -1,5 +1,5 @@
 from contextlib import contextmanager
-from time import monotonic
+from time import monotonic, perf_counter
 
 from fastapi import APIRouter, Request
 from pydantic import ValidationError
@@ -11,12 +11,20 @@ from cashly.core.errors import ApiError
 from cashly.db.models import ExpenseCategory
 from cashly.schemas.chat import ChatExtractEnvelope, ChatExtractInput
 from cashly.schemas.receipt import MAX_REQUEST_BYTES, ReceiptExtractInput
+from cashly.schemas.voice import (
+    MAX_AUDIO_REQUEST,
+    TranscriptData,
+    TranscriptEnvelope,
+    VoiceExtractInput,
+    VoiceTranscribeInput,
+)
 from cashly.services.accounts import load_account
-from cashly.services.chat_extraction import extract_chat
+from cashly.services.chat_extraction import extract_chat, logger
 from cashly.services.receipt_extraction import (
     extract_receipt,
     validate_image,
 )
+from cashly.services.voice_audio import normalize_audio
 
 router = APIRouter(tags=["Chat recording"])
 
@@ -43,6 +51,95 @@ async def extract(request: Request, identity: VerifiedIdentity, body: ChatExtrac
             categories,
             timezone,
             request.state.request_id,
+        )
+        return ChatExtractEnvelope(data=data)
+
+
+def ensure_extraction_account(db, identity):
+    with db.transaction(auth_user_id=identity.user_id) as session:
+        load_account(session, identity)
+
+
+def voice_request_schema():
+    schema = VoiceTranscribeInput.model_json_schema()
+    definitions = schema.pop("$defs")
+    schema["properties"]["audio"] = definitions["VoiceAudio"]
+    return schema
+
+
+@router.post(
+    "/voice/transcribe",
+    response_model=TranscriptEnvelope,
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {"application/json": {"schema": voice_request_schema()}},
+        }
+    },
+)
+async def transcribe_voice(request: Request, identity: VerifiedIdentity):
+    """Transcribe for an active account; never writes expenses."""
+    if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
+        raise ApiError(415, "INVALID_MEDIA_TYPE", "Kirim audio dalam format request JSON.")
+    with extraction_slot(request, identity):
+        await run_in_threadpool(ensure_extraction_account, database(request), identity)
+        payload = bytearray()
+        async for chunk in request.stream():
+            if len(payload) + len(chunk) > MAX_AUDIO_REQUEST:
+                raise ApiError(413, "AUDIO_TOO_LARGE", "Ukuran audio maksimal 5 MB.")
+            payload.extend(chunk)
+        try:
+            body = VoiceTranscribeInput.model_validate_json(payload)
+        except ValidationError:
+            raise ApiError(
+                422, "INVALID_AUDIO_INPUT", "Audio tidak valid atau melebihi 5 MB."
+            ) from None
+        del payload
+        started = perf_counter()
+        media = await run_in_threadpool(normalize_audio, body.audio)
+        logger.info(
+            "ai_extraction_audio_validated",
+            extra={
+                "request_id": request.state.request_id,
+                "input_kind": "voice",
+                "phase": "decode",
+                "audio_duration_seconds": media.duration_seconds,
+                "decode_ms": round((perf_counter() - started) * 1000, 2),
+                "outcome": "validated",
+            },
+        )
+        result = await extract_chat(
+            request.app.state.settings,
+            request.app.state.ai_http,
+            ChatExtractInput(message="Transkripsikan ucapan dalam audio ini secara harfiah."),
+            {},
+            "UTC",
+            request.state.request_id,
+            media=media,
+        )
+        return TranscriptEnvelope(
+            data=TranscriptData(
+                **result.model_dump(),
+                duration_seconds=media.duration_seconds,
+            )
+        )
+
+
+@router.post("/voice/extract", response_model=ChatExtractEnvelope)
+async def extract_voice(request: Request, identity: VerifiedIdentity, body: VoiceExtractInput):
+    """The user-reviewed transcript uses the shared extraction/validation contract."""
+    with extraction_slot(request, identity):
+        categories, timezone = await run_in_threadpool(
+            extraction_context, database(request), identity
+        )
+        data = await extract_chat(
+            request.app.state.settings,
+            request.app.state.ai_http,
+            body,
+            categories,
+            timezone,
+            request.state.request_id,
+            input_kind="voice",
         )
         return ChatExtractEnvelope(data=data)
 

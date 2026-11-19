@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
 
 from cashly.core.environment import ConfigurationError, EnvironmentSelection
+from cashly.schemas.ai_routing import FallbackModel
 
 
 class Settings(BaseModel):
@@ -32,15 +33,31 @@ class Settings(BaseModel):
     dev_sample_data: bool = False
     daily_checkin_test_mode: bool = False
     gemini_api_key: SecretStr | None = Field(default=None, repr=False)
-    gemini_model: str = Field(default="gemini-3.8-flash", pattern=r"^[a-zA-Z0-9._-]{1,100}$")
+    gemini_model: str = Field(default="gemini-3.5-flash-lite", pattern=r"^[a-zA-Z0-9._-]{1,100}$")
+    gemini_image_model: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9._-]{1,100}$")
+    gemini_audio_model: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9._-]{1,100}$")
     gemini_timeout_seconds: int = Field(default=35, ge=5, le=40)
     gemini_thinking_level: Literal["auto", "low", "medium", "high"] = "low"
     ai_provider: Literal["gemini", "openrouter"] = "gemini"
+    ai_audio_provider: Literal["gemini", "openrouter"] | None = None
     openrouter_api_key: SecretStr | None = Field(default=None, repr=False)
     openrouter_model: str = Field(
-        default="openrouter/free", pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$"
+        default="google/gemini-3.5-flash-lite", pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$"
+    )
+    openrouter_image_model: str | None = Field(
+        default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$"
+    )
+    openrouter_audio_model: str | None = Field(
+        default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$"
     )
     openrouter_timeout_seconds: int = Field(default=35, ge=5, le=40)
+
+    ai_fallback_models: tuple[FallbackModel, ...] = Field(
+        default=(FallbackModel(provider="openrouter", inputs=("text", "image", "audio")),),
+        max_length=12,
+    )
+    ai_attempt_timeout_seconds: float = Field(default=20, ge=1, le=40)
+    ai_total_timeout_seconds: float = Field(default=60, ge=5, le=60)
 
     @field_validator("ai_provider", mode="before")
     @classmethod
@@ -131,12 +148,23 @@ class Settings(BaseModel):
                 dev_sample_data=values.get("DEV_SAMPLE_DATA", "false"),
                 daily_checkin_test_mode=values.get("DAILY_CHECKIN_TEST_MODE", "false"),
                 gemini_api_key=values.get("GEMINI_API_KEY") or None,
-                gemini_model=values.get("GEMINI_MODEL", "gemini-3.8-flash"),
+                gemini_model=(values.get("GEMINI_MODEL") or "gemini-3.5-flash-lite"),
+                gemini_image_model=values.get("GEMINI_IMAGE_MODEL") or None,
+                gemini_audio_model=values.get("GEMINI_AUDIO_MODEL") or None,
                 gemini_timeout_seconds=values.get("GEMINI_TIMEOUT_SECONDS", "35"),
                 gemini_thinking_level=values.get("GEMINI_THINKING_LEVEL", "low"),
                 ai_provider=values.get("AI_PROVIDER", "gemini"),
+                ai_audio_provider=values.get("AI_AUDIO_PROVIDER") or None,
+                ai_fallback_models=json.loads(
+                    values.get("AI_FALLBACK_MODELS")
+                    or '[{"provider":"openrouter","inputs":["text","image","audio"]}]'
+                ),
+                ai_attempt_timeout_seconds=values.get("AI_ATTEMPT_TIMEOUT_SECONDS", "20"),
+                ai_total_timeout_seconds=values.get("AI_TOTAL_TIMEOUT_SECONDS", "60"),
                 openrouter_api_key=values.get("OPENROUTER_API_KEY") or None,
-                openrouter_model=values.get("OPENROUTER_MODEL", "openrouter/free"),
+                openrouter_model=(values.get("OPENROUTER_MODEL") or "google/gemini-3.5-flash-lite"),
+                openrouter_image_model=values.get("OPENROUTER_IMAGE_MODEL") or None,
+                openrouter_audio_model=values.get("OPENROUTER_AUDIO_MODEL") or None,
                 openrouter_timeout_seconds=values.get("OPENROUTER_TIMEOUT_SECONDS", "35"),
             )
         except (ValidationError, ValueError, TypeError):

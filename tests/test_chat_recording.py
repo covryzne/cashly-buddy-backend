@@ -142,7 +142,8 @@ def test_atomic_batch_replay_conflict_rollback_and_account_isolation(postgres_se
         db.dispose()
 
 
-def test_receipt_source_and_idempotent_confirmation(postgres_settings):
+@pytest.mark.parametrize("source", ["receipt", "voice"])
+def test_media_source_and_idempotent_confirmation(postgres_settings, source):
     upgrade_database(postgres_settings)
     db = Database(postgres_settings)
     identity = Identity(uuid4(), "receipt@example.invalid", "Receipt Tester", datetime.now(UTC))
@@ -152,15 +153,15 @@ def test_receipt_source_and_idempotent_confirmation(postgres_settings):
                 text("INSERT INTO auth.users(id) VALUES (:id)"), {"id": identity.user_id}
             )
         account = bootstrap(db, postgres_settings, identity)
-        receipt = {**record(), "source": "receipt"}
+        receipt = {**record(), "source": source}
         body = ChatBatchInput.model_validate({"records": [receipt]})
         saved = record_batch(db, identity, body, "receipt-test")
         assert saved == record_batch(db, identity, body, "receipt-test")
-        assert saved["data"][0]["source"] == "receipt"
+        assert saved["data"][0]["source"] == source
         with db.transaction(account_id=account.account_id) as session:
             row = session.scalar(select(Expense).where(Expense.account_id == account.account_id))
-            assert row.source_type == "receipt"
-            assert row.source_message_id == f"receipt:{receipt['id']}"
+            assert row.source_type == source
+            assert row.source_message_id == f"{source}:{receipt['id']}"
             assert (
                 session.scalar(
                     select(func.count())

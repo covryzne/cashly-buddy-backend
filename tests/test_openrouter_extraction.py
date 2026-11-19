@@ -186,7 +186,7 @@ def test_openrouter_endpoint_contract_and_safe_failures(
         assert calls[0]["authorization"] == "Bearer private-or-key"
         assert calls[0]["google_key"] is None
         body = calls[0]["body"]
-        assert body["model"] == "openrouter/free"
+        assert body["model"] == "google/gemini-3.5-flash-lite"
         assert body["provider"] == {"require_parameters": True}
         # A cap above the affordable budget makes OpenRouter answer 402 for priced models.
         assert body["max_tokens"] == 4096
@@ -195,7 +195,9 @@ def test_openrouter_endpoint_contract_and_safe_failures(
         assert body["messages"][0]["role"] == "system"
         assert body["messages"][1]["role"] == "user"
         assert body["stream"] is False
-        assert "models" not in body  # No app fallback list that might select a paid model.
+        assert (
+            "models" not in body
+        )  # Model fallback is routed/logged by the application, not this API parameter.
 
 
 @pytest.mark.parametrize("openrouter_key", [None, "", "   ", SecretStr("")])
@@ -348,9 +350,13 @@ def test_generic_diagnostic_and_logs_report_selected_and_resolved_model(monkeypa
         assert rows[0]["provider"] == "openrouter"
         assert rows[1]["outcome"] == "success"
         assert len(calls) == 1
-        metadata = log.call_args.kwargs["extra"]
+        metadata = next(
+            call.kwargs["extra"]
+            for call in reversed(log.call_args_list)
+            if call.args[0] == "ai_extraction_completed"
+        )
         assert metadata["provider"] == "openrouter"
-        assert metadata["model"] == "openrouter/free"
+        assert metadata["model"] == "google/gemini-3.5-flash-lite"
         assert metadata["resolved_model"] == "synthetic/model:free"
         assert metadata["upstream_provider"] == "Synthetic Provider"
         import logging
@@ -362,11 +368,13 @@ def test_generic_diagnostic_and_logs_report_selected_and_resolved_model(monkeypa
             setattr(record, key, value)
         for formatter in [JsonFormatter(), TerminalFormatter(color=False)]:
             formatted = formatter.format(record)
-            assert "synthetic/model:free" in formatted and "openrouter/free" in formatted
+            assert (
+                "synthetic/model:free" in formatted and "google/gemini-3.5-flash-lite" in formatted
+            )
             assert "private-or-key" not in formatted
 
 
-def test_openrouter_timeout_does_not_retry_or_fallback(monkeypatch):
+def test_openrouter_timeout_without_another_candidate_does_not_retry(monkeypatch):
     with provider(delay=0.2) as (url, calls):
         monkeypatch.setattr("cashly.services.openrouter_extraction.OPENROUTER_BASE_URL", url)
         settings = Settings(

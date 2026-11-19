@@ -21,7 +21,7 @@ from cashly.schemas.finance import ExpenseInput, ExpenseRead
 class ChatBatchRecord(StrictModel):
     id: UUID
     expense: ExpenseInput
-    source: Literal["chat", "receipt"] = "chat"
+    source: Literal["chat", "receipt", "voice"] = "chat"
 
 
 class ChatBatchInput(StrictModel):

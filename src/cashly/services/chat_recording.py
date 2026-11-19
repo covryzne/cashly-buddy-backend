@@ -62,7 +62,7 @@ def record_batch(db, identity, body, key):
                 id=uuid4(),
                 account_id=account.id,
                 source_platform="dashboard",
-                source_type="receipt" if record.source == "receipt" else "text",
+                source_type={"receipt": "receipt", "voice": "voice", "chat": "text"}[record.source],
                 source_message_id=source_id,
                 source_item_index=0,
                 timestamp_basis="user_explicit",

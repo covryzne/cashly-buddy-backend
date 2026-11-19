@@ -12,9 +12,11 @@ from pydantic import ValidationError
 
 from cashly.core.errors import ApiError
 from cashly.schemas.extraction import ModelExtraction
+from cashly.schemas.voice import TranscriptResult
 from cashly.services.chat_extraction import (
     RECEIPT_PROMPT,
     SYSTEM_PROMPT,
+    TRANSCRIPTION_PROMPT,
     apply_extraction,
     invalid_result,
     logger,
@@ -23,7 +25,9 @@ from cashly.services.chat_extraction import (
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
-def openrouter_schema():
+def openrouter_schema(transcribe=False):
+    if transcribe:
+        return TranscriptResult.model_json_schema()
     schema = ModelExtraction.model_json_schema()
     change = schema["$defs"]["ChatChange"]
     change["required"] = list(change["properties"])
@@ -52,30 +56,51 @@ def provider_failure(status):
 
 
 async def extract_openrouter_chat(
-    settings, client, body, categories, timezone, request_id, media=None
+    settings,
+    client,
+    body,
+    categories,
+    timezone,
+    request_id,
+    media=None,
+    input_kind=None,
+    attempt=1,
+    now=None,
 ):
     if settings.openrouter_api_key is None:
         raise ApiError(
             503, "AI_NOT_CONFIGURED", "API key OpenRouter belum dikonfigurasi di server."
         )
-    now = datetime.now(UTC).astimezone(ZoneInfo(timezone))
+    now = now or datetime.now(UTC).astimezone(ZoneInfo(timezone))
     context = {
         **body.model_dump(mode="json"),
         "current_time": now.isoformat(),
         "timezone": timezone,
         "categories": categories,
     }
+    kind = input_kind or (getattr(media, "kind", "receipt") if media else "chat")
+    transcribe = kind == "voice" and media is not None
+    model = (
+        settings.openrouter_audio_model
+        if transcribe
+        else settings.openrouter_image_model
+        if kind == "receipt"
+        else None
+    ) or settings.openrouter_model
     started = perf_counter()
     outcome = "failed"
     extra = {
         "request_id": request_id,
         "provider": "openrouter",
-        "input_kind": "receipt" if media else "chat",
-        "model": settings.openrouter_model,
-        "attempt": 1,
+        "input_kind": kind,
+        "phase": "transcribe" if transcribe else "extract",
+        "model": model,
+        "attempt": attempt,
         "transport": "httpx2",
         "api_version": "v1",
     }
+    if transcribe:
+        extra["audio_duration_seconds"] = media.duration_seconds
     logger.info("ai_extraction_started", extra=extra)
     try:
         # A per-read timeout does not bound a slow trickle of bytes, so enforce a hard
@@ -89,11 +114,17 @@ async def extract_openrouter_chat(
                     "X-Title": "Cashly",
                 },
                 json={
-                    "model": settings.openrouter_model,
+                    "model": model,
                     "messages": [
                         {
                             "role": "system",
-                            "content": SYSTEM_PROMPT + (RECEIPT_PROMPT if media else ""),
+                            "content": (
+                                TRANSCRIPTION_PROMPT
+                                + "\nRequired JSON schema: "
+                                + json.dumps(TranscriptResult.model_json_schema())
+                            )
+                            if transcribe
+                            else SYSTEM_PROMPT + (RECEIPT_PROMPT if media else ""),
                         },
                         {
                             "role": "user",
@@ -101,6 +132,11 @@ async def extract_openrouter_chat(
                                 [
                                     {"type": "text", "text": json.dumps(context)},
                                     {
+                                        "type": "input_audio",
+                                        "input_audio": {"data": media.data, "format": "wav"},
+                                    }
+                                    if transcribe
+                                    else {
                                         "type": "image_url",
                                         "image_url": {
                                             "url": f"data:{media.mime_type};base64,{media.data}"
@@ -112,14 +148,20 @@ async def extract_openrouter_chat(
                             ),
                         },
                     ],
-                    "response_format": {
-                        "type": "json_schema",
-                        "json_schema": {
-                            "name": "cashly_expense_extraction",
-                            "strict": True,
-                            "schema": openrouter_schema(),
-                        },
-                    },
+                    **(
+                        {
+                            "response_format": {
+                                "type": "json_schema",
+                                "json_schema": {
+                                    "name": "cashly_expense_extraction",
+                                    "strict": True,
+                                    "schema": openrouter_schema(transcribe),
+                                },
+                            }
+                        }
+                        if not transcribe
+                        else {}
+                    ),
                     "provider": {"require_parameters": True},
                     # OpenRouter rejects a request whose max_tokens exceeds the affordable
                     # budget (HTTP 402). Extraction output is small, so keep the cap modest.
@@ -133,6 +175,26 @@ async def extract_openrouter_chat(
         extra["upstream_status"] = response.status_code
         if response.status_code != 200:
             outcome = "rate_limited" if response.status_code == 429 else "upstream_error"
+            if transcribe and response.status_code in {400, 404, 422}:
+                try:
+                    error = response.json().get("error", {})
+                    message = error.get("message", "") if isinstance(error, dict) else ""
+                    unsupported = (
+                        isinstance(message, str)
+                        and "audio" in message.lower()
+                        and any(
+                            word in message.lower() for word in ("support", "endpoint", "modality")
+                        )
+                    )
+                except (ValueError, AttributeError):
+                    unsupported = False
+                if unsupported:
+                    extra["provider_error_reason"] = "audio_not_supported"
+                    raise ApiError(
+                        503,
+                        "AI_INPUT_UNSUPPORTED",
+                        ("Pemrosesan suara belum tersedia. Coba lagi atau catat lewat chat."),
+                    )
             raise provider_failure(response.status_code)
         if len(response.content) > 262144:
             outcome = "invalid_result"
@@ -159,6 +221,10 @@ async def extract_openrouter_chat(
         if message.get("refusal") or not isinstance(raw, str):
             outcome = "invalid_result"
             raise invalid_result()
+        if transcribe:
+            result = TranscriptResult.model_validate_json(raw)
+            outcome = result.status
+            return result
         result = ModelExtraction.model_validate_json(raw)
         data = apply_extraction(body, result, categories, now)
         outcome = result.intent
