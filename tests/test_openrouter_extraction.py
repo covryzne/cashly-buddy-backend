@@ -192,6 +192,14 @@ def test_openrouter_endpoint_contract_and_safe_failures(
         assert body["max_tokens"] == 4096
         assert body["response_format"]["type"] == "json_schema"
         assert body["response_format"]["json_schema"]["strict"] is True
+        schema = body["response_format"]["json_schema"]["schema"]
+        assert "maxItems" not in schema["properties"]["changes"]
+        draft = schema["$defs"]["ChatDraft"]["properties"]
+        assert "maxItems" not in draft["items"]
+        assert "pattern" not in draft["occurredTime"]
+        change = schema["$defs"]["ChatChange"]
+        assert "source_total_idr" in change["required"]
+        assert "default" not in change["properties"]["source_total_idr"]
         assert body["messages"][0]["role"] == "system"
         assert body["messages"][1]["role"] == "user"
         assert body["stream"] is False

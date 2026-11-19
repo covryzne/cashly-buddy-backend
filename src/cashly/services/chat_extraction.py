@@ -145,7 +145,7 @@ def invalid_result():
     )
 
 
-def gemini_extraction_schema(transcribe=False):
+def provider_extraction_schema(transcribe=False):
     """Keep grammar structure small; full bounds/formats remain backend validators."""
     schema = (TranscriptResult if transcribe else ModelExtraction).model_json_schema()
     ignored = {"title", "minItems", "maxItems", "minLength", "maxLength", "pattern", "format"}
@@ -356,7 +356,7 @@ async def extract_gemini_chat(
                     "response_format": {
                         "type": "text",
                         "mime_type": "application/json",
-                        "schema": gemini_extraction_schema(transcribe),
+                        "schema": provider_extraction_schema(transcribe),
                     },
                     "generation_config": generation_config,
                     "store": False,

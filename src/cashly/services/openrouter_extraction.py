@@ -20,6 +20,7 @@ from cashly.services.chat_extraction import (
     apply_extraction,
     invalid_result,
     logger,
+    provider_extraction_schema,
 )
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -28,7 +29,7 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 def openrouter_schema(transcribe=False):
     if transcribe:
         return TranscriptResult.model_json_schema()
-    schema = ModelExtraction.model_json_schema()
+    schema = provider_extraction_schema()
     change = schema["$defs"]["ChatChange"]
     change["required"] = list(change["properties"])
     change["properties"]["source_total_idr"].pop("default", None)
