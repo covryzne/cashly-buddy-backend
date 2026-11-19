@@ -1,0 +1,3 @@
+# Conda/venv entrypoint; keep all pins in one place.
+# Pillow and PyAV media-validation dependencies are pinned in this lock.
+-r requirements.lock
