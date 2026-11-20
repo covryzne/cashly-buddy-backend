@@ -20,3 +20,6 @@ npm-debug.log*
 supabase/.temp/
 supabase/.branches/
 docs/*
+# !docs/whatsapp-linking.md
+# !docs/whatsapp-linking.openapi.json
+# !docs/keyenv.py

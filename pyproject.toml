@@ -12,6 +12,7 @@ dependencies = [
     "SQLAlchemy==2.0.57", "alembic==1.20.1", "psycopg[binary]==3.3.9",
     "httpx2==2.16.0",
     "google-genai==3.4.0", "Pillow==13.0.0", "av==19.0.2",
+    "cryptography==50.0.2",
 ]
 
 [project.optional-dependencies]
