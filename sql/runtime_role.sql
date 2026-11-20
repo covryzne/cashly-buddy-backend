@@ -19,3 +19,7 @@ GRANT SELECT, INSERT ON cashly.streak_protections TO cashly_runtime;
 GRANT SELECT, INSERT, UPDATE ON cashly.account_security_challenges TO cashly_runtime;
 
 GRANT SELECT, INSERT, UPDATE ON cashly.password_recovery_sessions TO cashly_runtime;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON
+    cashly.whatsapp_challenges, cashly.whatsapp_channels, cashly.whatsapp_aliases,
+    cashly.whatsapp_events, cashly.whatsapp_outbox TO cashly_runtime;

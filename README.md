@@ -392,3 +392,6 @@ does not auto-reset on login or allow double XP. Staging/prod/hosted DBs are rej
 No migration required. One requested reset was applied locally for 2026-11-17.
 
 Email/account flow setup: [auth-email-flows.md](docs/auth-email-flows.md).
+
+WhatsApp linking, credential manual dan deployment migration 0007:
+[whatsapp-linking.md](docs/whatsapp-linking.md).

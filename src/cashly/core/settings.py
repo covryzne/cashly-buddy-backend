@@ -66,6 +66,12 @@ class Settings(BaseModel):
     )
     ai_attempt_timeout_seconds: float = Field(default=20, ge=1, le=40)
     ai_total_timeout_seconds: float = Field(default=60, ge=5, le=60)
+    whatsapp_enabled: bool = False
+    whatsapp_bot_number: str = Field(default="", pattern=r"^(?:[1-9][0-9]{7,14})?$")
+    whatsapp_instance: str = Field(default="cashly-staging", pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    whatsapp_integration_key: SecretStr | None = Field(default=None, repr=False)
+    whatsapp_hash_secret: SecretStr | None = Field(default=None, repr=False)
+    whatsapp_encryption_key: SecretStr | None = Field(default=None, repr=False)
 
     @field_validator("ai_provider", mode="before")
     @classmethod
@@ -159,6 +165,12 @@ class Settings(BaseModel):
                 db_connect_timeout=values.get("DB_CONNECT_TIMEOUT", "10"),
                 dev_sample_data=values.get("DEV_SAMPLE_DATA", "false"),
                 daily_checkin_test_mode=values.get("DAILY_CHECKIN_TEST_MODE", "false"),
+                whatsapp_enabled=values.get("WHATSAPP_ENABLED", "false"),
+                whatsapp_bot_number=values.get("WHATSAPP_BOT_NUMBER", ""),
+                whatsapp_instance=values.get("WHATSAPP_INSTANCE", "cashly-staging"),
+                whatsapp_integration_key=values.get("WHATSAPP_INTEGRATION_KEY") or None,
+                whatsapp_hash_secret=values.get("WHATSAPP_HASH_SECRET") or None,
+                whatsapp_encryption_key=values.get("WHATSAPP_ENCRYPTION_KEY") or None,
                 gemini_api_key=values.get("GEMINI_API_KEY") or None,
                 gemini_model=(values.get("GEMINI_MODEL") or "gemini-3.5-flash-lite"),
                 gemini_image_model=values.get("GEMINI_IMAGE_MODEL") or None,

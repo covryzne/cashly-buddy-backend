@@ -178,12 +178,12 @@
                                       rgba(115, 87, 232, 0.18);
                                   "
                                 >
-                                  <!-- Public HTTPS asset supplied by the user.
+                                  <!-- Public image served by the app configured as the Supabase Site URL.
                              Source: cashly-buddy-frontend/public/mascot/mochi-crown-transparent.png.
                              Do not use localhost, a data URI or an expiring signed URL in the sent email. -->
                                   <img
                                     class="mascot"
-                                    src="https://sjoutstsfbccimuwfaej.supabase.co/storage/v1/object/public/cashly-assets/mochi-crown-transparent.png"
+                                    src="{{ .SiteURL }}/mascot/mochi-crown-transparent.png"
                                     width="112"
                                     height="112"
                                     alt="Mochi Cashly dengan mahkota emas"
