@@ -588,6 +588,7 @@ def receive_event(db, settings, body):
                     settings,
                     {
                         "sender_id": body.sender_id,
+                        "sent_at": body.sent_at.isoformat(),
                         "text": message,
                         "caption": body.caption or "",
                     },

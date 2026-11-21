@@ -1,5 +1,6 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import select
@@ -13,12 +14,13 @@ from test_whatsapp_linking import wa as wa
 
 from cashly.db.models import Expense
 from cashly.repositories.accounts import set_account_context
-from cashly.schemas.extraction import ChatDraft, ChatEntry, ChatExtractData
+from cashly.schemas.extraction import ChatDraft, ChatEntry, ChatExtractData, TransactionTimestamp
 from cashly.schemas.voice import TranscriptResult
 from cashly.services import whatsapp, whatsapp_capture
+from cashly.services.whatsapp_reply import saved_expenses
 
 
-def admit(wa, kind, message="kopi 18rb", *, link=True):
+def admit(wa, kind, message="kopi 18rb", *, link=True, sent_at=None):
     api, settings, _, now, _, _ = wa
     settings = settings.model_copy(update={"whatsapp_recording_enabled": True})
     api.app.state.settings = settings
@@ -26,7 +28,10 @@ def admit(wa, kind, message="kopi 18rb", *, link=True):
         row, _ = connect(wa)
     else:
         row = None
-    return event(api, settings, incoming(row, now[0], message=message) | {"kind": kind})
+    payload = incoming(row, now[0], message=message) | {"kind": kind}
+    if sent_at:
+        payload["sent_at"] = sent_at.isoformat()
+    return event(api, settings, payload)
 
 
 def process(wa, job, **kwargs):
@@ -68,27 +73,51 @@ def expenses(wa):
     return response.json()["data"]
 
 
+def test_batch_confirmation_preserves_total_when_list_is_shortened():
+    rows = [
+        (
+            Expense(
+                description=f"Kopi {index}",
+                amount_idr=11000,
+                timestamp_basis="message_time",
+                occurred_at=datetime(2026, 11, 21, 8, 50, tzinfo=ZoneInfo("Asia/Jakarta")),
+            ),
+            [],
+            "Makanan",
+            True,
+        )
+        for index in range(9)
+    ]
+    message = saved_expenses(rows, {})
+    assert "Kopi 0 · Rp11.000" in message and "Kopi 8" not in message
+    assert "+ 1 transaksi lain di Cashly" in message
+    assert "Total 9 transaksi · Rp99.000" in message
+
+
 @pytest.mark.parametrize("kind", ["text", "receipt", "voice"])
 def test_linked_capture_commits_once_and_claims_reply(wa, monkeypatch, kind):
     api, settings, db, now, identities, accounts = wa
     calls = []
+    sent_at = now[0] - timedelta(minutes=7)
 
     async def chat(_settings, _client, body, *_args, media=None, input_kind="chat"):
         if media is not None:
             calls.append("transcription")
             return TranscriptResult(status="clear", transcript="kopi 18rb", issue=None)
         assert body.message == "kopi 18rb"
+        assert body._whatsapp_message_at == sent_at
         calls.append(input_kind)
         return result(now[0])
 
-    async def receipt(_settings, _client, body, *_args):
+    async def receipt(_settings, _client, body, *_args, message_at):
         assert body.image.mime_type == "image/png"
+        assert message_at == sent_at
         calls.append("receipt")
         return result(now[0])
 
     monkeypatch.setattr(whatsapp_capture, "extract_chat", chat)
     monkeypatch.setattr(whatsapp_capture, "extract_receipt", receipt)
-    job = admit(wa, kind)
+    job = admit(wa, kind, sent_at=sent_at)
     assert job["action"] == "process" and job["verified_link"]
     body = {"media": photo()} if kind == "receipt" else {}
     if kind == "voice":
@@ -104,6 +133,9 @@ def test_linked_capture_commits_once_and_claims_reply(wa, monkeypatch, kind):
     assert len(rows) == 1
     assert rows[0]["source"] == kind
     assert rows[0]["amount_idr"] == "18000"
+    assert datetime.fromisoformat(rows[0]["occurred_at"]) == sent_at
+    assert "*Kopi · Rp18.000*" in saved["reply"]["text"]
+    assert "Waktu pesan ·" in saved["reply"]["text"]
     with db.transaction(auth_user_id=identities[0].user_id) as session:
         set_account_context(session, accounts[0].account_id)
         assert session.scalar(select(Expense.source_platform)) == "whatsapp"
@@ -114,8 +146,13 @@ def test_linked_capture_commits_once_and_claims_reply(wa, monkeypatch, kind):
 def test_pending_receipt_is_saved_only_after_text_clarification(wa, monkeypatch):
     _, _, _, now, *_ = wa
 
-    async def receipt(*_args):
-        return result(now[0], complete=False)
+    async def receipt(*_args, **_kwargs):
+        data = result(now[0], complete=False)
+        stamp = TransactionTimestamp(
+            basis="receipt", transaction_date="2026-09-04", transaction_time=None
+        )
+        data.transaction_timestamps[data.entries[0].id] = stamp
+        return data
 
     async def chat(_settings, _client, body, *_args):
         assert len(body.entries) == 1 and body.entries[0].draft is None
@@ -128,6 +165,46 @@ def test_pending_receipt_is_saved_only_after_text_clarification(wa, monkeypatch)
     assert expenses(wa) == []
     saved = process(wa, admit(wa, "text", "18 ribu", link=False))
     assert saved["committed"] and expenses(wa)[0]["source"] == "receipt"
+    assert "4 Sep 2026\n" in saved["reply"]["text"]
+    assert "Waktu pesan" not in saved["reply"]["text"]
+
+
+def test_receipt_confirmation_formats_saved_line_items_and_totals(wa, monkeypatch):
+    _, _, _, now, *_ = wa
+
+    async def receipt(*_args, **_kwargs):
+        data = result(now[0])
+        entry = data.entries[0]
+        entry.draft = ChatDraft.model_validate(
+            draft(
+                merchant="Kedai Bento",
+                paymentMethod="QRIS",
+                discountIdr="1000",
+                taxIdr="500",
+                items=[{"id": "1", "name": "Es kopi susu", "quantity": "1", "priceIdr": "12000"}],
+            )
+        )
+        data.transaction_timestamps[entry.id] = TransactionTimestamp(
+            basis="receipt",
+            transaction_date="2026-09-04",
+            transaction_time="08:42",
+        )
+        return data
+
+    monkeypatch.setattr(whatsapp_capture, "extract_receipt", receipt)
+    saved = process(wa, admit(wa, "receipt"), media=photo())
+    message = saved["reply"]["text"]
+    assert saved["committed"] and expenses(wa)[0]["amount_idr"] == "11500"
+    for part in (
+        "*Kedai Bento · Rp11.500*",
+        "4 Sep 2026, 08.42",
+        "QRIS",
+        "Es kopi susu ×1",
+        "Diskon −Rp1.000",
+        "Pajak +Rp500",
+        "edit transaksinya di Cashly",
+    ):
+        assert part in message
 
 
 def test_whatsapp_redirect_carries_short_history_without_saving(wa, monkeypatch):

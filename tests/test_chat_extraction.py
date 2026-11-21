@@ -24,6 +24,7 @@ from cashly.core.settings import Settings
 from cashly.main import create_app
 from cashly.schemas.chat import ChatDraft, ChatExtractInput, ModelExtraction
 from cashly.services.chat_extraction import apply_extraction, extract_chat, safe_provider_error
+from cashly.services.openrouter_extraction import openrouter_schema
 
 
 def test_provider_error_diagnostics_are_finite_labels_without_raw_private_data():
@@ -143,6 +144,27 @@ def test_complete_purchase_is_only_a_preview_draft():
     assert result.entries[0].draft.items[0].priceIdr == "18000"
     assert "ditinjau" in result.reply
     assert "tersimpan" not in result.reply
+
+
+def test_whatsapp_timestamp_evidence_stays_internal_to_extraction():
+    body = ChatExtractInput(message="kopi kemarin 18rb")
+    body._whatsapp_message_at = NOW
+    result = extraction()
+    result["changes"][0]["transaction_timestamp"] = {
+        "basis": "user_explicit",
+        "transaction_date": "2026-11-17",
+        "transaction_time": None,
+    }
+    data = apply_extraction(body, ModelExtraction.model_validate(result), CATEGORIES, NOW)
+    assert (
+        data.transaction_timestamps[data.entries[0].id].transaction_date.isoformat() == "2026-11-17"
+    )
+    assert "transaction_timestamps" not in data.model_dump()
+    assert "transaction_timestamp" not in openrouter_schema()["$defs"]["ChatChange"]["required"]
+    assert (
+        "transaction_timestamp"
+        in openrouter_schema(whatsapp=True)["$defs"]["ChatChange"]["required"]
+    )
 
 
 def test_missing_merchant_uses_purchase_title_without_inventing_a_shop():
