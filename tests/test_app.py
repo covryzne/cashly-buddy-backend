@@ -147,6 +147,8 @@ def test_runtime_openapi_does_not_claim_unimplemented_endpoints(app):
         "/api/v1/integrations/whatsapp/events",
         "/api/v1/integrations/whatsapp/jobs/{job_id}/process",
         "/api/v1/integrations/whatsapp/outbox/claim",
+        "/api/v1/integrations/whatsapp/outbox/{reply_id}/report-data",
+        "/api/v1/integrations/whatsapp/outbox/{reply_id}/report-pdf",
         "/api/v1/integrations/whatsapp/deliveries",
         "/api/v1/receipts/extract",
         "/api/v1/voice/extract",

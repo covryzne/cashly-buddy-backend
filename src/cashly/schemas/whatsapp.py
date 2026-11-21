@@ -82,6 +82,7 @@ class ReplyData(BaseModel):
     id: UUID
     text: str
     lease_id: UUID | None = None
+    report_pdf: bool = False
 
 
 class AdmissionData(BaseModel):

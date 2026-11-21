@@ -1,8 +1,10 @@
 import hmac
 from typing import Annotated, Literal
+from urllib.parse import urlencode, urlsplit
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Query, Request
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from cashly.api.accounts import VerifiedIdentity, database
@@ -22,6 +24,7 @@ from cashly.schemas.whatsapp import (
     VerifyInput,
 )
 from cashly.services import whatsapp, whatsapp_capture
+from cashly.services.whatsapp_pdf import render_report
 
 router = APIRouter(tags=["WhatsApp linking"])
 
@@ -38,6 +41,40 @@ def require_integration(
 
 
 Integration = Annotated[None, Depends(require_integration)]
+ReportLease = Annotated[UUID, Header(alias="X-Cashly-Report-Lease")]
+
+
+@router.get("/integrations/whatsapp/outbox/{reply_id}/report-data")
+def outbox_report_data(request: Request, reply_id: UUID, lease: ReportLease):
+    data = whatsapp.report_data(database(request), request.app.state.settings, reply_id, lease)
+    return JSONResponse({"data": data}, headers={"Cache-Control": "private, no-store"})
+
+
+@router.get("/integrations/whatsapp/outbox/{reply_id}/report-pdf")
+def outbox_report_pdf(request: Request, reply_id: UUID, lease: ReportLease, _: Integration):
+    settings = request.app.state.settings
+    db = database(request)
+    _, report = whatsapp.claimed_report(db, settings, reply_id, lease)
+    origin = settings.whatsapp_report_frontend_url.rstrip("/")
+    parsed = urlsplit(origin)
+    if (
+        parsed.scheme not in {"https", "http"}
+        or not parsed.hostname
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+        or parsed.username
+    ):
+        raise ApiError(503, "WHATSAPP_PDF_UNAVAILABLE", "PDF belum tersedia di chat ini.")
+    query = urlencode({"reply": str(reply_id), "lease": str(lease)})
+    try:
+        encoded = render_report(f"{origin}/internal/whatsapp-report?{query}")
+    except ApiError as error:
+        return {"data": {"media": None, "text": error.public_message}}
+    whatsapp.claimed_report(db, settings, reply_id, lease)
+    return {
+        "data": {"media": encoded, "file_name": f"cashly-{report['start']}-{report['end']}.pdf"}
+    }
 
 
 @router.post("/me/whatsapp/challenges", response_model=ChallengeEnvelope)

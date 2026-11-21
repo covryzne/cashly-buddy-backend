@@ -207,6 +207,26 @@ def test_receipt_confirmation_formats_saved_line_items_and_totals(wa, monkeypatc
         assert part in message
 
 
+def test_pdf_document_uses_receipt_validation_and_saves_as_receipt(wa, monkeypatch):
+    from cashly.schemas.receipt import ReceiptImage
+
+    _, _, _, now, *_ = wa
+
+    def read_pdf(encoded):
+        assert encoded == "JVBERi0="
+        return ReceiptImage.model_validate(photo())
+
+    async def receipt(_settings, _client, body, *_args, **_kwargs):
+        assert body.image.mime_type == "image/png"
+        return result(now[0])
+
+    monkeypatch.setattr(whatsapp_capture, "pdf_receipt", read_pdf)
+    monkeypatch.setattr(whatsapp_capture, "extract_receipt", receipt)
+    job = admit(wa, "receipt")
+    saved = process(wa, job, media={"mime_type": "application/pdf", "data": "JVBERi0="})
+    assert saved["committed"] and expenses(wa)[0]["source"] == "receipt"
+
+
 def test_whatsapp_redirect_carries_short_history_without_saving(wa, monkeypatch):
     _, _, _, now, *_ = wa
     first = "Model AI kamu apa?"
