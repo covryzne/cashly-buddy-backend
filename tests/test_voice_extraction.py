@@ -226,6 +226,9 @@ def test_timeout_releases_inflight_slot_and_logs_no_audio(monkeypatch, caplog):
             )
             response = client.post("/api/v1/voice/transcribe", json={"audio": encoded_audio()})
             assert response.status_code == 504
+            assert response.json()["error"]["message"].startswith(
+                "Mochi belum bisa memproses catatan suaramu."
+            )
             assert all(not busy for _, busy in client.app.state.chat_limits.values())
     assert "RIFF" not in caplog.text and transcript()["transcript"] not in caplog.text
 

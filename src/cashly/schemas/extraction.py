@@ -111,6 +111,9 @@ class ModelExtraction(StrictModel):
 class ChatExtractData(StrictModel):
     entries: list[ChatEntry]
     reply: str
+    intent: Literal["record", "clarify", "out_of_scope", "help"] | None = Field(
+        default=None, exclude=True
+    )
 
 
 class ChatExtractEnvelope(StrictModel):

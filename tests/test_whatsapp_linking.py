@@ -362,6 +362,11 @@ def test_delivery_rejects_wrong_lease_and_recipient(wa):
 
 def test_user_routes_require_login_and_disabled_configuration_fails_closed():
     with TestClient(create_app(Settings(environment="dev"))) as api:
-        for method, path in (("GET", ""), ("DELETE", ""), ("POST", "/challenges")):
+        for method, path in (
+            ("GET", ""),
+            ("GET", "/history"),
+            ("DELETE", ""),
+            ("POST", "/challenges"),
+        ):
             assert api.request(method, "/api/v1/me/whatsapp" + path).status_code == 401
         assert api.post("/api/v1/integrations/whatsapp/outbox/claim", json={}).status_code == 503

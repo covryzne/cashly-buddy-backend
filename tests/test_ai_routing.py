@@ -297,7 +297,7 @@ def test_cancellation_does_not_call_another_provider(monkeypatch):
 
 
 def test_business_validation_failure_does_not_trigger_fallback(monkeypatch):
-    def reject(*_):
+    def reject(*_args, **_kwargs):
         raise ApiError(422, "CHAT_CONTEXT_LIMIT", "Catatan terlalu panjang.")
 
     monkeypatch.setattr("cashly.services.chat_extraction.apply_extraction", reject)

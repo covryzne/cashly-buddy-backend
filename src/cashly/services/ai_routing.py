@@ -99,7 +99,7 @@ async def extract_with_fallback(
                 raise ApiError(
                     504,
                     "AI_TIMEOUT",
-                    "AI belum merespons. Inputmu tetap tersedia untuk dicoba lagi.",
+                    "Prosesnya lebih lama dari biasanya. Coba lagi sebentar, ya.",
                 )
             extra = {
                 "request_id": request_id,
@@ -160,7 +160,7 @@ async def extract_with_fallback(
                 raise ApiError(
                     504,
                     "AI_TIMEOUT",
-                    "AI belum merespons. Inputmu tetap tersedia untuk dicoba lagi.",
+                    "Prosesnya lebih lama dari biasanya. Coba lagi sebentar, ya.",
                 ) from None
             except ApiError as error:
                 if error.code not in FALLBACK_ERRORS:
@@ -171,7 +171,7 @@ async def extract_with_fallback(
         if last_error is not None:
             raise last_error
         raise ApiError(
-            503, "AI_NOT_CONFIGURED", "Pemrosesan AI belum dikonfigurasi. Inputmu tetap aman."
+            503, "AI_NOT_CONFIGURED", "Mochi belum bisa memprosesnya. Coba lagi sebentar, ya."
         )
     except asyncio.CancelledError:
         outcome = "cancelled"
