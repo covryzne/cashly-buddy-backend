@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cashly-buddy-backend"
+version = "0.1.0"
+description = "Cashly FastAPI backend"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.163.1", "uvicorn==0.54.0", "pydantic==2.14.3", "python-dotenv==1.2.4",
+    "SQLAlchemy==2.0.57", "alembic==1.20.1", "psycopg[binary]==3.3.9",
+    "httpx2==2.16.0",
+    "google-genai==3.4.0", "Pillow==13.0.0", "av==19.0.2",
+    "cryptography==50.0.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.2.0", "httpx2==2.16.0", "ruff==0.17.5"]
+
+[project.scripts]
+cashly = "cashly.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "--basetemp=.pytest-tmp"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"migrations/versions/*.py" = ["E501"]
