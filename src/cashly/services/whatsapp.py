@@ -8,15 +8,16 @@ import json
 import re
 import secrets
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from urllib.parse import urlencode
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import and_, delete, func, or_, select, text, update
 
 from cashly.core.errors import ApiError
-from cashly.db.models import Account
+from cashly.db.models import Account, Profile
 from cashly.db.whatsapp_models import (
     WhatsAppAlias as Alias,
 )
@@ -40,6 +41,8 @@ from cashly.db.whatsapp_models import (
 )
 from cashly.repositories.accounts import set_account_context
 from cashly.services.accounts import load_account
+from cashly.services.whatsapp_guides import guide
+from cashly.services.whatsapp_reports import PDF_HELP, period, period_label, print_data, summary
 
 PENDING = ("awaiting_message", "otp_sent")
 TTL = timedelta(minutes=5)
@@ -313,6 +316,14 @@ def verify(db, settings, identity, challenge_id, code):
                     "Nomor ini tidak dapat dihubungkan. Periksa koneksi akunmu.",
                 )
             else:
+                first_link = not session.scalar(
+                    select(LinkHistory.id)
+                    .where(
+                        LinkHistory.account_id == account.id,
+                        LinkHistory.event == "linked",
+                    )
+                    .limit(1)
+                )
                 channel = Channel(
                     account_id=account.id,
                     phone_hash=row.phone_hash,
@@ -340,6 +351,32 @@ def verify(db, settings, identity, challenge_id, code):
                     .where(Outbox.account_id == account.id)
                     .values(payload_cipher=None)
                 )
+                if first_link:
+                    sender = decrypt(settings, row.sender_cipher)
+                    welcome = Event(
+                        bot_id=settings.whatsapp_instance,
+                        message_id=f"welcome:{channel.id}",
+                        sender_hash=digest(settings, "sender", sender),
+                        account_id=account.id,
+                        fingerprint=digest(settings, "welcome", str(channel.id)),
+                        created_at=now,
+                    )
+                    session.add(welcome)
+                    session.flush()
+                    enqueue_reply(
+                        session,
+                        settings,
+                        welcome,
+                        now,
+                        {
+                            "bot_id": welcome.bot_id,
+                            "message_id": welcome.message_id,
+                            "sender_id": sender,
+                            "kind": "text",
+                            "verified_link": True,
+                        },
+                        guide(settings, linked=True, welcome=True),
+                    )
     if error:
         raise error
     return status(db, settings, identity)
@@ -512,6 +549,7 @@ def receive_event(db, settings, body):
         message = (body.text or "").strip()
         match = LINK_MESSAGE.fullmatch(message) if body.kind == "text" else None
         challenge = None
+        report_period = None
         reply = (
             "Nomor ini belum terhubung ke Cashly. Buka Cashly → Profil → Hubungkan WhatsApp, "
             "lalu verifikasi OTP dulu ya."
@@ -566,17 +604,15 @@ def receive_event(db, settings, body):
                         f"Kode OTP Cashly kamu: {code}. Berlaku 5 menit. "
                         "Masukkan di aplikasi Cashly dan jangan bagikan kode ini."
                     )
-        elif re.match(r"^/(help|info|start)(?:\s|$)", message, re.IGNORECASE):
-            reply = (
-                "Hai cuy! Hubungkan nomor lewat Profil Cashly dan verifikasi OTP di aplikasi. "
-                "Pencatatan chat, foto struk dan VN WhatsApp masih disiapkan."
-            )
-            if channel and settings.whatsapp_recording_enabled:
-                reply = (
-                    "Hai! Kirim catatan seperti ‘kopi 18 ribu’, satu foto struk, atau VN. "
-                    "Kalau informasinya jelas, Mochi menyimpan pengeluaranmu ke Cashly. "
-                    "Kalau perlu detail tambahan, Mochi akan bertanya."
-                )
+        elif body.kind == "text" and re.match(
+            r"^/(help|info|start)(?:\s|$)", message, re.IGNORECASE
+        ):
+            reply = guide(settings, linked=bool(channel))
+        elif body.kind == "text" and re.match(
+            r"^/(laporan|reportpdf)(?:\s|$)", message, re.IGNORECASE
+        ):
+            if channel:
+                reply, report_period = report_command(session, settings, channel, message, now)
         elif channel and settings.whatsapp_recording_enabled:
             job = CaptureJob(
                 event_id=row.id,
@@ -602,24 +638,106 @@ def receive_event(db, settings, body):
                 "Nomormu sudah terhubung. Pencatatan WhatsApp masih disiapkan; "
                 "sementara catat lewat aplikasi Cashly ya."
             )
-        outbox = Outbox(
-            event_id=row.id,
-            account_id=row.account_id,
-            challenge_id=challenge.id if challenge else None,
-            created_at=now,
-            expires_at=challenge.otp_expires_at if challenge else now + TTL,
-            state="ready",
+        return enqueue_reply(session, settings, row, now, base, reply, challenge, report_period)
+
+
+def enqueue_reply(session, settings, row, now, base, reply, challenge=None, report_period=None):
+    outbox = Outbox(
+        event_id=row.id,
+        account_id=row.account_id,
+        challenge_id=challenge.id if challenge else None,
+        created_at=now,
+        expires_at=challenge.otp_expires_at if challenge else now + TTL,
+        state="ready",
+    )
+    session.add(outbox)
+    session.flush()
+    payload = {
+        **base,
+        "event_id": str(row.id),
+        "action": "reply",
+        "reply": {"id": str(outbox.id), "text": reply},
+    }
+    if report_period:
+        payload["reply"]["report_pdf"] = True
+        payload["report_period"] = report_period
+    outbox.payload_cipher = encrypt(settings, payload)
+    return {"data": payload}
+
+
+def report_command(session, settings, channel, message, now):
+    set_account_context(session, channel.account_id)
+    profile = session.get(Profile, channel.account_id)
+    account = session.get(Account, channel.account_id)
+    if not profile or not account or account.status != "active":
+        return "Buka Cashly dulu buat cek status akun kamu, ya.", None
+    command, *args = message.lower().split()
+    value = " ".join(args)
+    if command == "/laporan" and value not in {"hari ini", "bulan ini"}:
+        return "Pilih periode, ya: `/laporan hari ini` atau `/laporan bulan ini`.", None
+    if command == "/reportpdf" and not settings.whatsapp_report_frontend_url:
+        return (
+            "PDF belum tersedia di chat ini. Kamu bisa unduh dari menu *Laporan* di Cashly.",
+            None,
         )
-        session.add(outbox)
-        session.flush()
-        payload = {
-            **base,
-            "event_id": str(row.id),
-            "action": "reply",
-            "reply": {"id": str(outbox.id), "text": reply},
-        }
-        outbox.payload_cipher = encrypt(settings, payload)
-        return {"data": payload}
+    try:
+        start, end = period(value, now.astimezone(ZoneInfo(profile.timezone)).date())
+    except ValueError:
+        return PDF_HELP, None
+    if command == "/laporan":
+        return summary(session, account.id, profile.timezone, start, end), None
+    return (
+        f"📄 *Laporan Cashly*\n{period_label(start, end)}",
+        {"channel_id": str(channel.id), "start": str(start), "end": str(end)},
+    )
+
+
+def claimed_report(db, settings, reply_id, lease_id):
+    with transaction(db, settings) as (session, now, _):
+        row = session.get(Outbox, reply_id)
+        if (
+            row
+            and row.state == "claimed"
+            and row.lease_id == lease_id
+            and row.lease_until > now
+            and row.expires_at > now
+            and row.payload_cipher
+        ):
+            payload = decrypt(settings, row.payload_cipher)
+            report = payload.get("report_period")
+            if report:
+                return row.account_id, report
+    raise ApiError(404, "WHATSAPP_REPORT_UNAVAILABLE", "Laporan sudah tidak tersedia.")
+
+
+def report_data(db, settings, reply_id, lease_id):
+    account_id, report = claimed_report(db, settings, reply_id, lease_id)
+    with db.transaction(account_id=account_id) as session:
+        channel = session.get(Channel, UUID(report["channel_id"]))
+        account = session.get(Account, account_id)
+        profile = session.get(Profile, account_id)
+        if (
+            not channel
+            or channel.account_id != account_id
+            or not account
+            or account.status != "active"
+            or not profile
+        ):
+            raise ApiError(404, "WHATSAPP_REPORT_UNAVAILABLE", "Laporan sudah tidak tersedia.")
+        data = print_data(
+            session,
+            account_id,
+            profile.timezone,
+            date.fromisoformat(report["start"]),
+            date.fromisoformat(report["end"]),
+        )
+        if data is None:
+            raise ApiError(
+                422,
+                "WHATSAPP_REPORT_TOO_LARGE",
+                "Periode ini terlalu panjang. Coba rentang yang lebih pendek, ya.",
+            )
+        return data
 
 
 def capture_admission(base, event, job):

@@ -20,6 +20,7 @@ from cashly.services import whatsapp as wa
 from cashly.services.chat_extraction import extract_chat, logger
 from cashly.services.receipt_extraction import extract_receipt, validate_image
 from cashly.services.voice_audio import normalize_audio
+from cashly.services.whatsapp_pdf import pdf_receipt
 from cashly.services.whatsapp_reply import saved_expenses
 
 RETRY = "Pesan ini belum bisa diproses. Tunggu sebentar, lalu kirim lagi, ya."
@@ -225,7 +226,11 @@ async def infer(settings, client, body, work, request_id):
         raise ApiError(422, "INVALID_MEDIA", "Medianya belum bisa dibaca. Coba kirim ulang, ya.")
     media = body.media.model_dump()
     if body.kind == "receipt":
-        image = ReceiptImage.model_validate(media)
+        image = (
+            await run_in_threadpool(pdf_receipt, media["data"])
+            if media["mime_type"] == "application/pdf"
+            else ReceiptImage.model_validate(media)
+        )
         await run_in_threadpool(validate_image, image)
         request = ReceiptExtractInput(image=image, caption=data["caption"] or "")
         return await extract_receipt(

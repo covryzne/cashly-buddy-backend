@@ -298,6 +298,7 @@ def test_same_phone_verification_race_and_rls_isolation(wa):
         )
     assert outcomes.count("connected") == 1, outcomes
     assert outcomes.count(409) == 1, outcomes
+    assert claim(api, settings)["message_id"].startswith("welcome:")
     assert claim(api, settings) is None
     with db.transaction() as session:
         assert (
