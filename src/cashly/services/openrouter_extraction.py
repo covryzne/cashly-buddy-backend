@@ -18,6 +18,7 @@ from cashly.services.chat_extraction import (
     RECEIPT_PROMPT,
     SYSTEM_PROMPT,
     TRANSCRIPTION_PROMPT,
+    WHATSAPP_TIMESTAMP_PROMPT,
     apply_extraction,
     invalid_result,
     logger,
@@ -27,10 +28,10 @@ from cashly.services.chat_extraction import (
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
-def openrouter_schema(transcribe=False):
+def openrouter_schema(transcribe=False, *, whatsapp=False):
     if transcribe:
         return TranscriptResult.model_json_schema()
-    schema = provider_extraction_schema()
+    schema = provider_extraction_schema(whatsapp=whatsapp)
     change = schema["$defs"]["ChatChange"]
     change["required"] = list(change["properties"])
     change["properties"]["source_total_idr"].pop("default", None)
@@ -74,9 +75,10 @@ async def extract_openrouter_chat(
             503, "AI_NOT_CONFIGURED", "Mochi belum bisa memprosesnya. Coba lagi sebentar, ya."
         )
     now = now or datetime.now(UTC).astimezone(ZoneInfo(timezone))
+    whatsapp = body._whatsapp_message_at is not None
     context = {
         **body.model_dump(mode="json"),
-        "current_time": now.isoformat(),
+        "current_time": (body._whatsapp_message_at or now).astimezone(now.tzinfo).isoformat(),
         "timezone": timezone,
         "categories": categories,
     }
@@ -133,7 +135,8 @@ async def extract_openrouter_chat(
                                 else CHAT_REDIRECT_PROMPT
                                 if kind == "chat"
                                 else ""
-                            ),
+                            )
+                            + (WHATSAPP_TIMESTAMP_PROMPT if whatsapp else ""),
                         },
                         {
                             "role": "user",
@@ -164,7 +167,7 @@ async def extract_openrouter_chat(
                                 "json_schema": {
                                     "name": "cashly_expense_extraction",
                                     "strict": True,
-                                    "schema": openrouter_schema(transcribe),
+                                    "schema": openrouter_schema(transcribe, whatsapp=whatsapp),
                                 },
                             }
                         }

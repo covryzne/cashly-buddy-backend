@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 from time import perf_counter
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -151,6 +151,18 @@ Return at most ONE change. If multiple unrelated transactions appear, ask for on
 transaction. Always produce an editable draft only; never claim it is saved.
 """
 
+WHATSAPP_TIMESTAMP_PROMPT = """
+For each WhatsApp change, set transaction_timestamp only for a date or time actually stated
+in this message/transcript, caption, or visibly printed on the receipt. Use basis receipt for
+printed information and user_explicit for user wording. Resolve words like kemarin against
+current_time. Use YYYY-MM-DD for transaction_date and HH:MM for transaction_time.
+Leave unstated components null,
+including inferred meal times and defaults. Include readable evidence even if draft is null
+and only another detail needs clarification. If there is no such evidence, use null. Never
+copy historical or fallback timestamps into this field. For a receipt timestamp in the
+future, ask for the actual date or time before recording.
+"""
+
 
 def invalid_result():
     return ApiError(
@@ -158,9 +170,17 @@ def invalid_result():
     )
 
 
-def provider_extraction_schema(transcribe=False):
+def provider_extraction_schema(transcribe=False, *, whatsapp=False):
     """Keep grammar structure small; full bounds/formats remain backend validators."""
     schema = (TranscriptResult if transcribe else ModelExtraction).model_json_schema()
+    if not transcribe:
+        change = schema["$defs"]["ChatChange"]
+        if whatsapp:
+            change["properties"]["transaction_timestamp"].pop("default", None)
+            change["required"].append("transaction_timestamp")
+        else:
+            change["properties"].pop("transaction_timestamp")
+            schema["$defs"].pop("TransactionTimestamp")
     ignored = {"title", "minItems", "maxItems", "minLength", "maxLength", "pattern", "format"}
 
     def simplify(value):
@@ -212,9 +232,26 @@ def apply_extraction(body, result, categories, now, *, input_kind="chat"):
     if result.intent == "record" and not result.changes:
         raise invalid_result()
     changed = set()
+    timestamps = {}
     for change in result.changes:
         if body.edit_entry_id is not None and change.target_id != body.edit_entry_id:
             raise invalid_result()
+        stamp = change.transaction_timestamp if body._whatsapp_message_at is not None else None
+        if stamp is not None:
+            if stamp.basis == "receipt" and input_kind != "receipt":
+                raise invalid_result()
+            reference = body._whatsapp_message_at.astimezone(now.tzinfo)
+            if datetime.combine(
+                stamp.transaction_date or reference.date(),
+                stamp.transaction_time or time.min,
+                tzinfo=now.tzinfo,
+            ) > now:
+                result.intent = "clarify"
+                change.draft = None
+                stamp = None
+                change.reason = "ambiguous"
+                change.question = "Kapan transaksinya? Waktu yang terbaca masih di masa depan."
+                result.question = change.question
         if change.draft is not None and change.source_total_idr is not None:
             value = change.draft
             calculated = (
@@ -245,7 +282,7 @@ def apply_extraction(body, result, categories, now, *, input_kind="chat"):
             occurred = datetime.fromisoformat(
                 f"{change.draft.occurredDate}T{change.draft.occurredTime}"
             ).replace(tzinfo=now.tzinfo)
-            if occurred > now:
+            if body._whatsapp_message_at is None and occurred > now:
                 raise invalid_result()
         elif result.intent != "clarify" or not change.question or not change.reason:
             raise invalid_result()
@@ -265,6 +302,8 @@ def apply_extraction(body, result, categories, now, *, input_kind="chat"):
             issue=change.question,
             reason=change.reason,
         )
+        if stamp is not None:
+            timestamps[entry.id] = stamp
         if old:
             entries = [entry if e.id == old.id else e for e in entries]
         else:
@@ -295,7 +334,9 @@ def apply_extraction(body, result, categories, now, *, input_kind="chat"):
         pending = sum(e.draft is None for e in entries)
         if pending:
             reply += f" {pending} catatan masih perlu dilengkapi."
-    return ChatExtractData(entries=entries, reply=reply, intent=result.intent)
+    return ChatExtractData(
+        entries=entries, reply=reply, intent=result.intent, transaction_timestamps=timestamps
+    )
 
 
 async def extract_gemini_chat(
@@ -313,9 +354,10 @@ async def extract_gemini_chat(
     if settings.gemini_api_key is None:
         raise ApiError(503, "AI_NOT_CONFIGURED", "Mochi belum bisa memprosesnya. Coba lagi sebentar, ya.")
     now = now or datetime.now(UTC).astimezone(ZoneInfo(timezone))
+    whatsapp = body._whatsapp_message_at is not None
     context = {
         **body.model_dump(mode="json"),
-        "current_time": now.isoformat(),
+        "current_time": (body._whatsapp_message_at or now).astimezone(now.tzinfo).isoformat(),
         "timezone": timezone,
         "categories": categories,
     }
@@ -375,11 +417,12 @@ async def extract_gemini_chat(
                     "system_instruction": TRANSCRIPTION_PROMPT
                     if transcribe
                     else SYSTEM_PROMPT
-                    + (RECEIPT_PROMPT if media else CHAT_REDIRECT_PROMPT if kind == "chat" else ""),
+                    + (RECEIPT_PROMPT if media else CHAT_REDIRECT_PROMPT if kind == "chat" else "")
+                    + (WHATSAPP_TIMESTAMP_PROMPT if whatsapp else ""),
                     "response_format": {
                         "type": "text",
                         "mime_type": "application/json",
-                        "schema": provider_extraction_schema(transcribe),
+                        "schema": provider_extraction_schema(transcribe, whatsapp=whatsapp),
                     },
                     "generation_config": generation_config,
                     "store": False,

@@ -1,6 +1,6 @@
 """Process one verified WhatsApp event and atomically persist its outcome."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -12,7 +12,7 @@ from cashly.core.errors import ApiError
 from cashly.db.models import Account, Expense, ExpenseCategory, ExpenseItem, Profile
 from cashly.db.whatsapp_models import WhatsAppCaptureJob as Job
 from cashly.repositories.accounts import set_account_context
-from cashly.schemas.extraction import ChatEntry, ChatExtractInput
+from cashly.schemas.extraction import ChatEntry, ChatExtractInput, TransactionTimestamp
 from cashly.schemas.receipt import ReceiptExtractInput, ReceiptImage
 from cashly.schemas.voice import VoiceAudio, VoiceExtractInput
 from cashly.services import gamification
@@ -20,6 +20,7 @@ from cashly.services import whatsapp as wa
 from cashly.services.chat_extraction import extract_chat, logger
 from cashly.services.receipt_extraction import extract_receipt, validate_image
 from cashly.services.voice_audio import normalize_audio
+from cashly.services.whatsapp_reply import saved_expenses
 
 RETRY = "Pesan ini belum bisa diproses. Tunggu sebentar, lalu kirim lagi, ya."
 REDIRECT_CONTEXT_TTL = timedelta(minutes=10)
@@ -31,6 +32,7 @@ PAYMENTS = {
     "Kartu kredit": "credit_card",
     "Dompet digital": "e_wallet",
 }
+PAYMENT_LABELS = {code: name for name, code in PAYMENTS.items()}
 
 
 def outcome(job_id, event_id, status, reply=None):
@@ -195,6 +197,9 @@ def begin(db, settings, job_id, body):
         return None, {
             "lease": job.lease_id,
             "data": data,
+            "message_at": datetime.fromisoformat(data["sent_at"])
+            if "sent_at" in data
+            else event.created_at,
             "timezone": profile.timezone,
             "categories": {category.code: category.label_id for category in categories},
             "context": context,
@@ -214,6 +219,7 @@ async def infer(settings, client, body, work, request_id):
             entries=context["entries"] if context else [],
             history=work["history"],
         )
+        request._whatsapp_message_at = work["message_at"]
         return await extract_chat(settings, client, request, *options)
     if body.input_error or body.media is None:
         raise ApiError(422, "INVALID_MEDIA", "Medianya belum bisa dibaca. Coba kirim ulang, ya.")
@@ -222,7 +228,9 @@ async def infer(settings, client, body, work, request_id):
         image = ReceiptImage.model_validate(media)
         await run_in_threadpool(validate_image, image)
         request = ReceiptExtractInput(image=image, caption=data["caption"] or "")
-        return await extract_receipt(settings, client, request, *options)
+        return await extract_receipt(
+            settings, client, request, *options, message_at=work["message_at"]
+        )
     audio = await run_in_threadpool(normalize_audio, VoiceAudio.model_validate(media))
     transcript = await extract_chat(
         settings,
@@ -240,24 +248,56 @@ async def infer(settings, client, body, work, request_id):
             "VN-nya belum terdengar jelas. Coba rekam ulang atau ketik catatanmu.",
         )
     request = VoiceExtractInput(message=transcript.transcript)
+    request._whatsapp_message_at = work["message_at"]
     return await extract_chat(settings, client, request, *options, input_kind="voice")
 
 
-def record_expenses(session, account_id, timezone, event, job, result, work, now):
+def capture_times(result, work):
     pending = work["context"]
-    earlier = {item["id"] for item in pending["entries"]} if pending else set()
+    previous = pending.get("times", {}) if pending else {}
+    old_entries = {item["id"]: item for item in pending["entries"]} if pending else {}
+    times = {}
+    for entry in result.entries:
+        key = str(entry.id)
+        old = previous.get(key, {})
+        stamp = result.transaction_timestamps.get(entry.id)
+        evidence = old.get("explicit")
+        if stamp:
+            evidence = stamp.model_dump(mode="json")
+            if old.get("explicit"):
+                for part in ("transaction_date", "transaction_time"):
+                    if evidence[part] is None:
+                        evidence[part] = old["explicit"][part]
+        old_entry = old_entries.get(key)
+        fallback = old_entry["createdAt"] if old_entry else work["message_at"].isoformat()
+        times[key] = {"reference": old.get("reference", fallback), "explicit": evidence}
+    return times
+
+
+def record_expenses(session, account_id, timezone, event, job, result, work, times, now):
+    pending = work["context"]
+    kinds = pending["kinds"] if pending else {}
+    zone = ZoneInfo(timezone)
     rows = []
     for index, entry in enumerate(result.entries):
         draft = entry.draft
-        occurred = datetime.fromisoformat(f"{draft.occurredDate}T{draft.occurredTime}").replace(
-            tzinfo=ZoneInfo(timezone)
-        )
+        timing = times[str(entry.id)]
+        reference = datetime.fromisoformat(timing["reference"]).astimezone(zone)
+        stamp = timing["explicit"]
+        if stamp is None:
+            occurred, basis, show_time = min(reference, now.astimezone(zone)), "message_time", True
+        else:
+            stamp = TransactionTimestamp.model_validate(stamp)
+            occurred = datetime.combine(
+                stamp.transaction_date or reference.date(),
+                stamp.transaction_time or time.min,
+                tzinfo=zone,
+            )
+            basis, show_time = stamp.basis, stamp.transaction_time is not None
         category = session.get(ExpenseCategory, draft.categoryCode)
         if not category or not category.is_active or occurred > now:
             raise ApiError(409, "INVALID_DRAFT", "Periksa tanggal atau kategori pengeluaranmu, ya.")
-        kind = (
-            pending["kinds"].get(str(entry.id), job.kind) if str(entry.id) in earlier else job.kind
-        )
+        kind = kinds.get(str(entry.id), job.kind)
         subtotal = sum(int(item.quantity) * int(item.priceIdr) for item in draft.items)
         row = Expense(
             id=uuid4(),
@@ -274,28 +314,29 @@ def record_expenses(session, account_id, timezone, event, job, result, work, now
             source_type=kind,
             source_message_id=event.message_id,
             source_item_index=index,
-            timestamp_basis="receipt" if kind == "receipt" else "user_explicit",
+            timestamp_basis=basis,
         )
-        rows.append((row, draft.items))
-    for row, items in rows:
+        rows.append((row, draft.items, category.label_id, show_time))
+    records = []
+    for row, items, category, show_time in rows:
         session.add(row)
         session.flush()
+        saved_items = []
         for index, item in enumerate(items):
             quantity, price = int(item.quantity), int(item.priceIdr)
-            session.add(
-                ExpenseItem(
-                    expense_id=row.id,
-                    item_index=index,
-                    label=item.name,
-                    quantity=quantity,
-                    unit_price_idr=price,
-                    amount_idr=quantity * price,
-                )
+            saved_item = ExpenseItem(
+                expense_id=row.id,
+                item_index=index,
+                label=item.name,
+                quantity=quantity,
+                unit_price_idr=price,
+                amount_idr=quantity * price,
             )
+            session.add(saved_item)
+            saved_items.append(saved_item)
         gamification.on_expense(session, account_id, timezone, row.occurred_at)
-    total = sum(row.amount_idr for row, _ in rows)
-    rupiah = f"{total:,}".replace(",", ".")
-    return f"Tersimpan di Cashly: {len(rows)} pengeluaran, total Rp{rupiah}."
+        records.append((row, saved_items, category, show_time))
+    return saved_expenses(records, PAYMENT_LABELS)
 
 
 def finish(db, settings, job_id, body, work, result, failure=None):
@@ -318,6 +359,7 @@ def finish(db, settings, job_id, body, work, result, failure=None):
             [ChatEntry.model_validate(item) for item in pending["entries"]] if pending else []
         )
         changed = result.entries != prior_entries
+        times = capture_times(result, work) if changed else None
         if (
             result.intent == "record"
             and changed
@@ -325,7 +367,7 @@ def finish(db, settings, job_id, body, work, result, failure=None):
             and all(entry.draft is not None for entry in result.entries)
         ):
             message = record_expenses(
-                session, event.account_id, work["timezone"], event, job, result, work, now
+                session, event.account_id, work["timezone"], event, job, result, work, times, now
             )
             if previous:
                 previous.context_cipher = None
@@ -336,6 +378,7 @@ def finish(db, settings, job_id, body, work, result, failure=None):
                 settings,
                 {
                     "entries": [item.model_dump(mode="json") for item in result.entries],
+                    "times": times,
                     "kinds": {
                         str(item.id): kinds.get(str(item.id), job.kind) for item in result.entries
                     },

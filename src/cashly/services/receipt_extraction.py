@@ -49,12 +49,21 @@ def validate_image(image: ReceiptImage):
 
 
 async def extract_receipt(
-    settings, client, body: ReceiptExtractInput, categories, timezone, request_id
+    settings,
+    client,
+    body: ReceiptExtractInput,
+    categories,
+    timezone,
+    request_id,
+    *,
+    message_at=None,
 ):
+    text = ChatExtractInput(message=body.caption or "Baca pengeluaran dari foto ini.")
+    text._whatsapp_message_at = message_at
     data = await extract_chat(
         settings,
         client,
-        ChatExtractInput(message=body.caption or "Baca pengeluaran dari foto ini."),
+        text,
         categories,
         timezone,
         request_id,

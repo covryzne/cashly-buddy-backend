@@ -1,10 +1,11 @@
 """Extraction drafts are separate from committed expense inputs."""
 
 from datetime import date, datetime
+from datetime import time as LocalTime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 from cashly.schemas.finance import Money
 
@@ -77,6 +78,7 @@ class ChatMessage(StrictModel):
 
 
 class ChatExtractInput(StrictModel):
+    _whatsapp_message_at: datetime | None = PrivateAttr(default=None)
     message: str = Field(min_length=1, max_length=1000)
     entries: list[ChatEntry] = Field(default_factory=list, max_length=50)
     history: list[ChatMessage] = Field(default_factory=list, max_length=12)
@@ -94,12 +96,26 @@ class ChatExtractInput(StrictModel):
         return self
 
 
+class TransactionTimestamp(StrictModel):
+    basis: Literal["receipt", "user_explicit"]
+    transaction_date: date | None
+    transaction_time: LocalTime | None
+
+    @model_validator(mode="after")
+    def valid_local_timestamp(self):
+        clock = self.transaction_time
+        if (self.transaction_date is None and clock is None) or (clock and clock.tzinfo):
+            raise ValueError("Expected an explicit local date or time")
+        return self
+
+
 class ChatChange(StrictModel):
     target_id: UUID | None
     draft: ChatDraft | None
     question: str | None = Field(max_length=240)
     reason: Literal["name", "amount", "ambiguous"] | None
     source_total_idr: Money | None = None
+    transaction_timestamp: TransactionTimestamp | None = None
 
 
 class ModelExtraction(StrictModel):
@@ -113,6 +129,9 @@ class ChatExtractData(StrictModel):
     reply: str
     intent: Literal["record", "clarify", "out_of_scope", "help"] | None = Field(
         default=None, exclude=True
+    )
+    transaction_timestamps: dict[UUID, TransactionTimestamp] = Field(
+        default_factory=dict, exclude=True
     )
 
 
