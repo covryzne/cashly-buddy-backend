@@ -395,3 +395,9 @@ Email/account flow setup: [auth-email-flows.md](docs/auth-email-flows.md).
 
 WhatsApp linking, credential manual dan deployment migration 0007:
 [whatsapp-linking.md](docs/whatsapp-linking.md).
+
+Timeline connect/disconnect dan deployment migration 0008:
+[WHATSAPP_HISTORY.md](WHATSAPP_HISTORY.md).
+
+Aktivasi pencatatan chat, struk, dan VN setelah OTP:
+[WHATSAPP_CAPTURE.md](WHATSAPP_CAPTURE.md).

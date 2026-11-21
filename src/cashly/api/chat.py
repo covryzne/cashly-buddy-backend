@@ -28,6 +28,20 @@ from cashly.services.voice_audio import normalize_audio
 
 router = APIRouter(tags=["Chat recording"])
 
+CHAT_UNAVAILABLE = "Mochi belum bisa memproses pesanmu. Tunggu sebentar, lalu coba kirim lagi, ya."
+VOICE_UNAVAILABLE = "Mochi belum bisa memproses catatan suaramu. Coba lagi sebentar, ya."
+RECEIPT_UNAVAILABLE = "Mochi belum bisa membaca strukmu. Coba lagi sebentar, ya."
+
+
+@contextmanager
+def extraction_errors(message: str):
+    try:
+        yield
+    except ApiError as error:
+        if error.status_code < 500 and error.code != "AI_RATE_LIMITED":
+            raise
+        raise ApiError(error.status_code, error.code, message) from None
+
 
 def extraction_context(db, identity):
     with db.transaction(auth_user_id=identity.user_id) as session:
@@ -43,7 +57,7 @@ def extraction_context(db, identity):
 async def extract(request: Request, identity: VerifiedIdentity, body: ChatExtractInput):
     """Extract drafts only; never writes expenses or awards a streak."""
     categories, timezone = await run_in_threadpool(extraction_context, database(request), identity)
-    with extraction_slot(request, identity):
+    with extraction_slot(request, identity), extraction_errors(CHAT_UNAVAILABLE):
         data = await extract_chat(
             request.app.state.settings,
             request.app.state.ai_http,
@@ -81,7 +95,7 @@ async def transcribe_voice(request: Request, identity: VerifiedIdentity):
     """Transcribe for an active account; never writes expenses."""
     if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
         raise ApiError(415, "INVALID_MEDIA_TYPE", "Kirim audio dalam format request JSON.")
-    with extraction_slot(request, identity):
+    with extraction_slot(request, identity), extraction_errors(VOICE_UNAVAILABLE):
         await run_in_threadpool(ensure_extraction_account, database(request), identity)
         payload = bytearray()
         async for chunk in request.stream():
@@ -128,7 +142,7 @@ async def transcribe_voice(request: Request, identity: VerifiedIdentity):
 @router.post("/voice/extract", response_model=ChatExtractEnvelope)
 async def extract_voice(request: Request, identity: VerifiedIdentity, body: VoiceExtractInput):
     """The user-reviewed transcript uses the shared extraction/validation contract."""
-    with extraction_slot(request, identity):
+    with extraction_slot(request, identity), extraction_errors(VOICE_UNAVAILABLE):
         categories, timezone = await run_in_threadpool(
             extraction_context, database(request), identity
         )
@@ -184,7 +198,7 @@ async def receipt_extract(request: Request, identity: VerifiedIdentity):
     """Read a bounded image request and return an editable draft, never an expense."""
     if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
         raise ApiError(415, "INVALID_MEDIA_TYPE", "Kirim foto dalam format request JSON.")
-    with extraction_slot(request, identity):
+    with extraction_slot(request, identity), extraction_errors(RECEIPT_UNAVAILABLE):
         payload = bytearray()
         async for chunk in request.stream():
             if len(payload) + len(chunk) > MAX_REQUEST_BYTES:

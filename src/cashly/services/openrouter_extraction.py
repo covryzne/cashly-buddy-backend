@@ -14,6 +14,7 @@ from cashly.core.errors import ApiError
 from cashly.schemas.extraction import ModelExtraction
 from cashly.schemas.voice import TranscriptResult
 from cashly.services.chat_extraction import (
+    CHAT_REDIRECT_PROMPT,
     RECEIPT_PROMPT,
     SYSTEM_PROMPT,
     TRANSCRIPTION_PROMPT,
@@ -38,22 +39,22 @@ def openrouter_schema(transcribe=False):
 
 def provider_failure(status):
     if status in {401, 403}:
-        return ApiError(503, "AI_ACCESS_DENIED", "Akses OpenRouter ditolak. Periksa key di server.")
+        return ApiError(503, "AI_ACCESS_DENIED", "Mochi belum bisa memprosesnya. Coba lagi sebentar, ya.")
     if status == 402:
         return ApiError(
-            503, "AI_CREDITS_REQUIRED", "Kredit atau akses model OpenRouter belum tersedia."
+            503, "AI_CREDITS_REQUIRED", "Mochi belum bisa memprosesnya. Coba lagi sebentar, ya."
         )
     if status == 404:
-        return ApiError(503, "AI_MODEL_NOT_FOUND", "Model atau endpoint OpenRouter belum tersedia.")
+        return ApiError(503, "AI_MODEL_NOT_FOUND", "Mochi belum bisa memprosesnya. Coba lagi sebentar, ya.")
     if status in {400, 422}:
         return ApiError(
-            502, "AI_REQUEST_REJECTED", "Model OpenRouter belum menerima format ekstraksi."
+            502, "AI_REQUEST_REJECTED", "Mochi belum bisa memprosesnya. Coba lagi sebentar, ya."
         )
     if status == 429:
-        return ApiError(429, "AI_RATE_LIMITED", "Kuota OpenRouter sedang penuh. Coba lagi nanti.")
+        return ApiError(429, "AI_RATE_LIMITED", "Tunggu sebentar, lalu coba lagi, ya.")
     if status in {408, 504}:
-        return ApiError(504, "AI_TIMEOUT", "OpenRouter belum merespons. Coba kirim ulang pesanmu.")
-    return ApiError(503, "AI_UNAVAILABLE", "OpenRouter belum tersedia. Pesan dan draft tetap aman.")
+        return ApiError(504, "AI_TIMEOUT", "Prosesnya lebih lama dari biasanya. Coba lagi sebentar, ya.")
+    return ApiError(503, "AI_UNAVAILABLE", "Mochi belum bisa memprosesnya. Coba lagi sebentar, ya.")
 
 
 async def extract_openrouter_chat(
@@ -70,7 +71,7 @@ async def extract_openrouter_chat(
 ):
     if settings.openrouter_api_key is None:
         raise ApiError(
-            503, "AI_NOT_CONFIGURED", "API key OpenRouter belum dikonfigurasi di server."
+            503, "AI_NOT_CONFIGURED", "Mochi belum bisa memprosesnya. Coba lagi sebentar, ya."
         )
     now = now or datetime.now(UTC).astimezone(ZoneInfo(timezone))
     context = {
@@ -125,7 +126,14 @@ async def extract_openrouter_chat(
                                 + json.dumps(TranscriptResult.model_json_schema())
                             )
                             if transcribe
-                            else SYSTEM_PROMPT + (RECEIPT_PROMPT if media else ""),
+                            else SYSTEM_PROMPT
+                            + (
+                                RECEIPT_PROMPT
+                                if media
+                                else CHAT_REDIRECT_PROMPT
+                                if kind == "chat"
+                                else ""
+                            ),
                         },
                         {
                             "role": "user",
@@ -227,7 +235,7 @@ async def extract_openrouter_chat(
             outcome = result.status
             return result
         result = ModelExtraction.model_validate_json(raw)
-        data = apply_extraction(body, result, categories, now)
+        data = apply_extraction(body, result, categories, now, input_kind=kind)
         outcome = result.intent
         return data
     except TimeoutError:

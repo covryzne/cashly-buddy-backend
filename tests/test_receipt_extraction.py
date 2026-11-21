@@ -162,6 +162,9 @@ def test_provider_failure_and_missing_auth_are_safe(monkeypatch):
             response = client.post("/api/v1/receipts/extract", json={"image": photo()})
             assert response.status_code == 503
             assert response.json()["error"]["code"] == "AI_UNAVAILABLE"
+            assert response.json()["error"]["message"].startswith(
+                "Mochi belum bisa membaca strukmu."
+            )
             assert "never return" not in response.text
             client.app.dependency_overrides.clear()
             response = client.post("/api/v1/receipts/extract", json={"image": photo()})

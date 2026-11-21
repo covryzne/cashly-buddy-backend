@@ -23,3 +23,7 @@ GRANT SELECT, INSERT, UPDATE ON cashly.password_recovery_sessions TO cashly_runt
 GRANT SELECT, INSERT, UPDATE, DELETE ON
     cashly.whatsapp_challenges, cashly.whatsapp_channels, cashly.whatsapp_aliases,
     cashly.whatsapp_events, cashly.whatsapp_outbox TO cashly_runtime;
+
+-- History survives disconnect; application runtime can only read/append.
+GRANT SELECT, INSERT ON cashly.whatsapp_link_history TO cashly_runtime;
+GRANT SELECT, INSERT, UPDATE ON cashly.whatsapp_capture_jobs TO cashly_runtime;

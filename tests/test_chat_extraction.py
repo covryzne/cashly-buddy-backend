@@ -228,6 +228,37 @@ def test_out_of_scope_and_ambiguous_target_cannot_change_drafts():
         apply({"message": "buat kode python"}, extraction(intent="out_of_scope"))
 
 
+def test_manual_chat_uses_model_redirect_and_keeps_existing_drafts():
+    existing = apply({"message": "kopi 18rb"}, extraction()).model_dump(mode="json")["entries"]
+    for message, redirect in (
+        ("modelnya apa?", "Detail modelnya nggak aku bahas di sini. Coba kirim kopi 18rb."),
+        ("balasannya kok kaku?", "Mau lanjut mengecek draft kopi tadi bareng Mochi?"),
+    ):
+        result = apply(
+            {"message": message, "entries": existing},
+            {"intent": "out_of_scope", "question": redirect, "changes": []},
+        )
+        assert result.reply == redirect
+        assert result.model_dump(mode="json")["entries"] == existing
+
+
+@pytest.mark.parametrize(
+    "redirect",
+    [
+        None,
+        "   ",
+        "Baris pertama\nAda pengeluaran?",
+        "Buka https://example.invalid?",
+        "x" * 180 + "?",
+    ],
+)
+def test_manual_chat_falls_back_when_redirect_is_unusable(redirect):
+    body = {"message": "modelnya apa?"}
+    fallback = apply(body, {"intent": "out_of_scope", "question": None, "changes": []})
+    result = apply(body, {"intent": "out_of_scope", "question": redirect, "changes": []})
+    assert result == fallback
+
+
 def test_unanswered_correction_keeps_the_complete_draft():
     existing = apply({"message": "kopi 18rb"}, extraction()).entries[0]
     result = apply(
@@ -417,6 +448,9 @@ def test_missing_key_and_unauthenticated_requests_do_not_call_provider(monkeypat
         result = client.post("/api/v1/chat/extract", json={"message": "kopi"})
         assert result.status_code == 503
         assert result.json()["error"]["code"] == "AI_NOT_CONFIGURED"
+        assert result.json()["error"]["message"] == (
+            "Mochi belum bisa memproses pesanmu. Tunggu sebentar, lalu coba kirim lagi, ya."
+        )
 
 
 def test_model_metadata_visible_in_both_log_formats_without_content():

@@ -39,6 +39,19 @@ class ConnectionEnvelope(BaseModel):
     data: ConnectionData
 
 
+class LinkHistoryData(BaseModel):
+    id: UUID
+    event: Literal["linked", "disconnected"]
+    occurred_at: AwareDatetime
+    masked_number: str
+    source: Literal["action", "existing_connection"]
+
+
+class LinkHistoryEnvelope(BaseModel):
+    data: list[LinkHistoryData]
+    next_cursor: str | None = None
+
+
 class MediaHint(StrictInput):
     mime_type: str | None = Field(default=None, max_length=100)
 
@@ -76,8 +89,9 @@ class AdmissionData(BaseModel):
     bot_id: str
     message_id: str
     sender_id: str
-    action: Literal["reply", "ignore"]
+    action: Literal["reply", "ignore", "process"]
     verified_link: bool = False
+    job_id: UUID | None = None
     kind: Literal["text", "receipt", "voice"]
     reply: ReplyData | None = None
 
@@ -92,6 +106,38 @@ class ClaimInput(StrictInput):
 
 class ClaimEnvelope(BaseModel):
     data: AdmissionData | None
+
+
+class CaptureMedia(StrictInput):
+    mime_type: str = Field(min_length=1, max_length=80)
+    data: str = Field(min_length=4, max_length=4 * ((10 * 1024 * 1024 + 2) // 3))
+
+
+class CaptureInput(StrictInput):
+    event_id: UUID
+    kind: Literal["text", "receipt", "voice"]
+    media: CaptureMedia | None = None
+    input_error: (
+        Literal[
+            "MEDIA_FETCH_FAILED",
+            "MEDIA_TYPE_UNSUPPORTED",
+            "MEDIA_BASE64_INVALID",
+            "MEDIA_TOO_LARGE",
+        ]
+        | None
+    ) = None
+
+
+class CaptureOutcome(BaseModel):
+    event_id: UUID
+    job_id: UUID
+    status: Literal["saved", "needs_review", "failed", "queued", "ignored"]
+    committed: bool = False
+    reply: ReplyData | None = None
+
+
+class CaptureEnvelope(BaseModel):
+    data: CaptureOutcome
 
 
 class DeliveryInput(StrictInput):

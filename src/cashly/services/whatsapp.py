@@ -1,5 +1,7 @@
 """Account-scoped linking; no AI, media fetch or financial mutations."""
 
+import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -8,15 +10,18 @@ import secrets
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from cryptography.fernet import Fernet, InvalidToken
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import and_, delete, func, or_, select, text, update
 
 from cashly.core.errors import ApiError
 from cashly.db.models import Account
 from cashly.db.whatsapp_models import (
     WhatsAppAlias as Alias,
+)
+from cashly.db.whatsapp_models import (
+    WhatsAppCaptureJob as CaptureJob,
 )
 from cashly.db.whatsapp_models import (
     WhatsAppChallenge as Challenge,
@@ -26,6 +31,9 @@ from cashly.db.whatsapp_models import (
 )
 from cashly.db.whatsapp_models import (
     WhatsAppEvent as Event,
+)
+from cashly.db.whatsapp_models import (
+    WhatsAppLinkHistory as LinkHistory,
 )
 from cashly.db.whatsapp_models import (
     WhatsAppOutbox as Outbox,
@@ -222,14 +230,26 @@ def status(db, settings, identity):
                 "masked_number": "•••• " + channel.phone_last4 if channel else None,
                 "connected_at": channel.verified_at if channel else None,
                 "challenge": challenge_data(settings, pending) if pending and not channel else None,
-                "recording_available": False,
+                "recording_available": settings.whatsapp_recording_enabled,
             }
         }
 
 
 def disconnect(db, settings, identity):
-    with transaction(db, settings, identity) as (session, _, account):
+    with transaction(db, settings, identity) as (session, now, account):
         cancel_pending(session, account.id)
+        channel = session.scalar(select(Channel).where(Channel.account_id == account.id))
+        if channel:
+            session.add(
+                LinkHistory(
+                    account_id=account.id,
+                    connection_id=channel.id,
+                    event="disconnected",
+                    occurred_at=now,
+                    phone_last4=channel.phone_last4,
+                    source="action",
+                )
+            )
         session.execute(delete(Channel).where(Channel.account_id == account.id))
     return {"data": {"status": "not_linked", "recording_available": False}}
 
@@ -301,6 +321,16 @@ def verify(db, settings, identity, challenge_id, code):
                 )
                 session.add(channel)
                 session.flush()
+                session.add(
+                    LinkHistory(
+                        account_id=account.id,
+                        connection_id=channel.id,
+                        event="linked",
+                        occurred_at=now,
+                        phone_last4=channel.phone_last4,
+                        source="action",
+                    )
+                )
                 session.add_all(
                     [Alias(identity_hash=value, channel_id=channel.id) for value in row.aliases]
                 )
@@ -313,6 +343,79 @@ def verify(db, settings, identity, challenge_id, code):
     if error:
         raise error
     return status(db, settings, identity)
+
+
+def link_history(db, settings, identity, limit=10, cursor=None, *, event=None):
+    before = None
+    if cursor is not None:
+        try:
+            raw = base64.b64decode(cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True)
+            values = json.loads(raw)
+            if (
+                not isinstance(values, list)
+                or len(values) != 2
+                or not all(isinstance(value, str) for value in values)
+            ):
+                raise ValueError
+            at, identifier = datetime.fromisoformat(values[0]), UUID(values[1])
+            if at.tzinfo is None:
+                raise ValueError
+            before = (at, identifier)
+        except (ValueError, TypeError, binascii.Error, UnicodeDecodeError):
+            raise ApiError(
+                422, "WHATSAPP_HISTORY_CURSOR_INVALID", "Halaman riwayat tidak valid."
+            ) from None
+    configured(settings)
+    with db.transaction(auth_user_id=identity.user_id) as session:
+        account, _ = load_account(session, identity)
+        query = select(LinkHistory).where(LinkHistory.account_id == account.id)
+        if event is not None:
+            query = query.where(LinkHistory.event == event)
+        if before:
+            at, identifier = before
+            query = query.where(
+                or_(
+                    LinkHistory.occurred_at < at,
+                    and_(LinkHistory.occurred_at == at, LinkHistory.id < identifier),
+                )
+            )
+        rows = list(
+            session.scalars(
+                query.order_by(
+                    LinkHistory.occurred_at.desc(),
+                    LinkHistory.id.desc(),
+                ).limit(limit + 1)
+            )
+        )
+        visible = rows[:limit]
+        next_cursor = None
+        if len(rows) > limit:
+            last = visible[-1]
+            next_cursor = (
+                base64.urlsafe_b64encode(
+                    json.dumps(
+                        [
+                            last.occurred_at.isoformat(),
+                            str(last.id),
+                        ]
+                    ).encode()
+                )
+                .decode()
+                .rstrip("=")
+            )
+        return {
+            "data": [
+                {
+                    "id": row.id,
+                    "event": row.event,
+                    "occurred_at": row.occurred_at,
+                    "masked_number": "•••• " + row.phone_last4,
+                    "source": row.source,
+                }
+                for row in visible
+            ],
+            "next_cursor": next_cursor,
+        }
 
 
 def identity_keys(settings, body):
@@ -372,6 +475,10 @@ def receive_event(db, settings, body):
             out = session.scalar(select(Outbox).where(Outbox.event_id == existing.id))
             if out and out.state == "ready" and out.payload_cipher:
                 return {"data": decrypt(settings, out.payload_cipher)}
+            if settings.whatsapp_recording_enabled and not out:
+                job = session.scalar(select(CaptureJob).where(CaptureJob.event_id == existing.id))
+                if job and job.state == "ready" and job.expires_at > now:
+                    return capture_admission(base, existing, job)
             return {"data": {**base, "event_id": str(existing.id), "action": "ignore"}}
         recent = session.scalar(
             select(func.count())
@@ -464,6 +571,31 @@ def receive_event(db, settings, body):
                 "Hai cuy! Hubungkan nomor lewat Profil Cashly dan verifikasi OTP di aplikasi. "
                 "Pencatatan chat, foto struk dan VN WhatsApp masih disiapkan."
             )
+            if channel and settings.whatsapp_recording_enabled:
+                reply = (
+                    "Hai! Kirim catatan seperti ‘kopi 18 ribu’, satu foto struk, atau VN. "
+                    "Kalau informasinya jelas, Mochi menyimpan pengeluaranmu ke Cashly. "
+                    "Kalau perlu detail tambahan, Mochi akan bertanya."
+                )
+        elif channel and settings.whatsapp_recording_enabled:
+            job = CaptureJob(
+                event_id=row.id,
+                channel_id=channel.id,
+                kind=body.kind,
+                state="ready",
+                expires_at=now + TTL,
+                input_cipher=encrypt(
+                    settings,
+                    {
+                        "sender_id": body.sender_id,
+                        "text": message,
+                        "caption": body.caption or "",
+                    },
+                ),
+            )
+            session.add(job)
+            session.flush()
+            return capture_admission(base, row, job)
         elif channel:
             reply = (
                 "Nomormu sudah terhubung. Pencatatan WhatsApp masih disiapkan; "
@@ -489,8 +621,25 @@ def receive_event(db, settings, body):
         return {"data": payload}
 
 
+def capture_admission(base, event, job):
+    return {
+        "data": {
+            **base,
+            "event_id": str(event.id),
+            "action": "process",
+            "verified_link": True,
+            "job_id": str(job.id),
+        }
+    }
+
+
 def claim_outbox(db, settings, reply_id=None):
     with transaction(db, settings) as (session, now, _):
+        if reply_id is None and settings.whatsapp_recording_enabled:
+            from cashly.services.whatsapp_capture import expire_jobs
+
+            expire_jobs(session, settings, now)
+            session.flush()
         query = select(Outbox).where(
             Outbox.state == "ready", Outbox.expires_at > now, Outbox.payload_cipher.is_not(None)
         )
