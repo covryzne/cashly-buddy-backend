@@ -141,7 +141,6 @@ def test_daily_reminder_inbox_subscription_and_account_scope(postgres_settings, 
         assert defaults["daily_enabled"] is False and defaults["push_public_key"]
         assert defaults["test_push_available"] is True
         reminder = {"daily_enabled": True, "reminder_time": "08:42"}
-        assert client.patch(f"{ROOT}/preferences", json=reminder).is_success
         endpoint = "https://fcm.googleapis.com/fcm/send/fixture-endpoint"
         keys = {
             "endpoint": endpoint,
@@ -151,6 +150,8 @@ def test_daily_reminder_inbox_subscription_and_account_scope(postgres_settings, 
             "auth": web_push.encode(bytes(16)),
         }
         assert client.post(f"{ROOT}/push", json=keys).is_success
+        assert client.get(f"{ROOT}/preferences").json()["data"]["daily_enabled"] is False
+        assert client.patch(f"{ROOT}/preferences", json=reminder).is_success
         device = client.post(f"{ROOT}/preferences/device", json={"endpoint": endpoint}).json()[
             "data"
         ]
@@ -265,6 +266,12 @@ def test_daily_reminder_inbox_subscription_and_account_scope(postgres_settings, 
         assert selected["production_reminder_times"] == ["08:00", "12:00", "19:00"]
         assert selected["test_push_available"] is False
         assert client.patch(f"{ROOT}/preferences", json={"daily_enabled": True}).is_success
+        assert client.patch(f"{ROOT}/preferences", json={"daily_enabled": False}).is_success
+        assert client.post(f"{ROOT}/push", json=dict(keys, endpoint=second_endpoint)).json() == {
+            "data": {"active": True, "daily_enabled": True}
+        }
+        preferences = client.get(f"{ROOT}/preferences").json()["data"]
+        assert preferences["daily_enabled"] is True and preferences["reminder_time"] == "08:00"
         assert client.post(f"{ROOT}/push/test", json=second_device).status_code == 404
 
         with database.engine.begin() as connection:

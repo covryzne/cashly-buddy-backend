@@ -64,7 +64,7 @@ def send_test(
 ):
     key = request.app.state.web_push_key
     if key is None:
-        raise ApiError(503, "PUSH_UNAVAILABLE", "Push belum tersedia di staging.")
+        raise ApiError(503, "PUSH_UNAVAILABLE", "Tes notifikasi belum tersedia di staging.")
     db = database(request)
     with db.transaction(auth_user_id=identity.user_id) as session:
         account, _ = load_account(session, identity)
@@ -76,7 +76,7 @@ def send_test(
             {"account": account.id, "url": body.endpoint},
         )
         if subscription is None:
-            raise ApiError(404, "PUSH_DEVICE_MISSING", "Aktifkan push di perangkat ini dulu.")
+            raise ApiError(404, "PUSH_DEVICE_MISSING", "Aktifkan notifikasi di perangkat ini dulu.")
         # Keep one reservation per account and update it atomically across backend processes.
         reserved = session.scalar(
             text("""

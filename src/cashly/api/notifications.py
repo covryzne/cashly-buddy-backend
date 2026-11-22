@@ -203,26 +203,11 @@ def device_preferences(body: EndpointInput, request: Request, identity: Verified
     return read_preferences(request, identity, body.endpoint)
 
 
-@router.patch("/preferences")
-def save_preferences(body: ReminderInput, request: Request, identity: VerifiedIdentity):
-    settings = request.app.state.settings
-    production = settings.environment == "prod"
-    if production:
-        reminder_time = settings.production_reminder_times[0]
-    elif body.reminder_time is None:
-        raise ApiError(422, "REMINDER_TIME_REQUIRED", "Pilih jam pengingat dulu.")
-    else:
-        reminder_time = time.fromisoformat(body.reminder_time)
-    staging_start_day = None
-    if settings.environment == "staging":
-        local_now = datetime.now(WIB)
-        staging_start_day = local_now.date()
-        if reminder_time <= local_now.time():
-            staging_start_day += timedelta(days=1)
-    with database(request).transaction(auth_user_id=identity.user_id) as session:
-        account, _ = load_account(session, identity)
-        session.execute(
-            text("""
+def set_reminder(
+    session, account_id, enabled, reminder_time, *, production, staging_start_day=None
+):
+    session.execute(
+        text("""
           INSERT INTO cashly.notification_preferences AS current
             (account_id, daily_enabled, reminder_time, staging_start_day, production_enabled_at)
           VALUES (:account, :enabled, :time, :staging_start_day,
@@ -241,13 +226,41 @@ def save_preferences(body: ReminderInput, request: Request, identity: VerifiedId
                 ELSE current.production_enabled_at
               END
         """),
-            {
-                "account": account.id,
-                "enabled": body.daily_enabled,
-                "time": reminder_time,
-                "staging_start_day": staging_start_day,
-                "production": production,
-            },
+        {
+            "account": account_id,
+            "enabled": enabled,
+            "time": reminder_time,
+            "staging_start_day": staging_start_day,
+            "production": production,
+        },
+    )
+
+
+@router.patch("/preferences")
+def save_preferences(body: ReminderInput, request: Request, identity: VerifiedIdentity):
+    settings = request.app.state.settings
+    production = settings.environment == "prod"
+    if production:
+        reminder_time = settings.production_reminder_times[0]
+    elif body.reminder_time is None:
+        raise ApiError(422, "REMINDER_TIME_REQUIRED", "Pilih jam pengingat dulu.")
+    else:
+        reminder_time = time.fromisoformat(body.reminder_time)
+    staging_start_day = None
+    if settings.environment == "staging":
+        local_now = datetime.now(WIB)
+        staging_start_day = local_now.date()
+        if reminder_time <= local_now.time():
+            staging_start_day += timedelta(days=1)
+    with database(request).transaction(auth_user_id=identity.user_id) as session:
+        account, _ = load_account(session, identity)
+        set_reminder(
+            session,
+            account.id,
+            body.daily_enabled,
+            reminder_time,
+            production=production,
+            staging_start_day=staging_start_day,
         )
     return preference_response(request, body.daily_enabled, reminder_time)
 
@@ -268,7 +281,9 @@ def push_status(body: EndpointInput, request: Request, identity: VerifiedIdentit
 @router.post("/push")
 def register_push(body: SubscriptionInput, request: Request, identity: VerifiedIdentity):
     if request.app.state.web_push_key is None:
-        raise ApiError(503, "PUSH_UNAVAILABLE", "Push belum tersedia di lingkungan ini.")
+        raise ApiError(503, "PUSH_UNAVAILABLE", "Notifikasi perangkat belum tersedia saat ini.")
+    settings = request.app.state.settings
+    production = settings.environment == "prod"
     with database(request).transaction(auth_user_id=identity.user_id) as session:
         account, _ = load_account(session, identity)
         params = {
@@ -295,9 +310,13 @@ def register_push(body: SubscriptionInput, request: Request, identity: VerifiedI
             )
             if updated is None:
                 raise ApiError(
-                    409, "PUSH_ALREADY_REGISTERED", "Daftarkan ulang push di perangkat ini."
+                    409, "PUSH_ALREADY_REGISTERED", "Aktifkan ulang notifikasi di perangkat ini."
                 )
-    return {"data": {"active": True}}
+        if production:
+            set_reminder(
+                session, account.id, True, settings.production_reminder_times[0], production=True
+            )
+    return {"data": {"active": True, "daily_enabled": True} if production else {"active": True}}
 
 
 @router.delete("/push")
