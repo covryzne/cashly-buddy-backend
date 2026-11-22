@@ -58,9 +58,7 @@ def check_database(settings: Settings) -> dict:
 
 
 def upgrade_database(settings: Settings) -> None:
-    if settings.environment not in {"dev", "staging"}:
-        raise ConfigurationError("This migration launcher supports dev/staging only.")
-    verify_development_target(settings)
+    verify_migration_target(settings)
     try:
         command.upgrade(alembic_config(settings), "head")
     except Exception:
@@ -70,15 +68,13 @@ def upgrade_database(settings: Settings) -> None:
         ) from None
 
 
-def verify_development_target(settings: Settings) -> None:
-    """Require runtime/migration URLs to match the configured Supabase project.
-
-    This catches accidental URL mixups, not a false declaration that a live project
-    is development. The operator must select the isolated dev project locally.
-    """
+def verify_migration_target(settings: Settings) -> None:
+    """Require hosted migration and runtime URLs to match the selected project."""
     migration = database_url(settings.migration_database_url)
-    if migration.host in {"localhost", "127.0.0.1", "::1"}:
+    is_prod = settings.environment == "prod"
+    if not is_prod and migration.host in {"localhost", "127.0.0.1", "::1"}:
         return
+    runtime = database_url(settings.database_url)
     try:
         parsed = urlsplit(settings.supabase_url or "")
         host = parsed.hostname or ""
@@ -87,18 +83,37 @@ def verify_development_target(settings: Settings) -> None:
         project = host.removesuffix(".supabase.co")
         if not project or "." in project:
             raise ValueError
-        for url in (migration, database_url(settings.database_url)):
+        roles = []
+        for url in (migration, runtime):
             direct = url.host == f"db.{project}.supabase.co"
             pooled = (url.host or "").endswith(".pooler.supabase.com") and (
                 url.username or ""
             ).endswith(f".{project}")
             if not (direct or pooled):
                 raise ValueError
+            if is_prod and url.query.keys() & {
+                "host",
+                "hostaddr",
+                "port",
+                "dbname",
+                "user",
+                "service",
+            }:
+                raise ValueError
+            roles.append(url.username.removesuffix(f".{project}") if pooled else url.username)
+        if is_prod and migration.database != runtime.database:
+            raise ValueError
     except (ValueError, TypeError):
         raise ConfigurationError(
             "Migration target mismatch. Set SUPABASE_URL, DATABASE_URL and "
-            "MIGRATION_DATABASE_URL to the same isolated dev/staging project. Values are omitted."
+            "MIGRATION_DATABASE_URL to the same Supabase project and database for the selected "
+            "environment. Values are omitted."
         ) from None
+    if is_prod and roles[0] == roles[1]:
+        raise ConfigurationError(
+            "Production migration requires a separate database role from the runtime role. "
+            "Values are omitted."
+        )
 
 
 def render_migration_sql() -> str:

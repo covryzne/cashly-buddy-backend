@@ -176,7 +176,7 @@ kind still follows the URL host: loopback is `Database lokal`, hosted staging is
 `Database staging`. No credentials/hostnames are sent in this metadata. Keep FE
 running locally with its existing API origin; changing the backend env does not
 require switching branches or changing FE runtime. Reload the page after restart.
-API docs visibility is unchanged. Migration commands now accept dev/staging (ADR-0083).
+API docs visibility is unchanged. Run production migrations explicitly with `python -m cashly db-upgrade`.
 
 ## Database/auth configuration
 
@@ -213,10 +213,10 @@ python -m cashly db-check
 `db-sql` is an offline preview and does not read env files or connect anywhere.
 Do not commit the generated preview. The other commands use the selected env
 file/system source without printing credentials. Fill the two DB URLs and
-`SUPABASE_URL` privately first. Choose the empty, isolated dev project; the
-launcher checks that both URLs match that project and permits online migrations
-only in dev/staging. A correctly labeled live project cannot be detected by this guard,
-so verify the actual project in Supabase Dashboard before applying.
+`SUPABASE_URL` privately first. The launcher checks that both database URLs match
+the configured Supabase project. Production also requires matching database
+names and separate runtime and migration logins. Verify the selected project
+in the Supabase Dashboard before applying.
 
 `db-check` is read-only and prints only `connected`, `tls`, `privileged_role` and
 `schema_current` booleans. Before migration, `schema_current` can be false; after
@@ -239,8 +239,30 @@ only Cashly app objects, excluding Supabase/Auth and unrelated schemas.
 Normal Alembic tooling is also configured: `alembic current`, `alembic check`,
 `alembic revision --autogenerate -m "description"`. Review generated migrations,
 especially RLS/functions/grants. Use the safe `db-upgrade` wrapper to apply them;
-raw online Alembic also enforces the dev target guard but may print driver errors
-locally. Schema bootstrap occurs only during online Alembic operations.
+raw online Alembic is available for dev and staging and may print driver errors
+locally. Production upgrades use `db-upgrade`.
+
+### Production deployment with Compose
+
+Set `CASHLY_IMAGE_TAG` to the backend release image already built or loaded on the
+server. Set `MIGRATION_DATABASE_URL` to a login with DDL access, then run:
+
+```sh
+docker compose -f compose.prod.yaml run --rm --no-deps --pull never backend python -m cashly db-upgrade
+```
+
+For the first deployment, apply `sql/runtime_role.sql` as a database administrator
+after the migration. Create a separate API login with a private password and
+grant it membership in `cashly_runtime`. For Supabase Session pooler, use
+`<api-login>.<project-ref>` as the `DATABASE_URL` username on port `5432`.
+
+```sh
+docker compose -f compose.prod.yaml run --rm --no-deps --pull never backend python -m cashly db-check
+docker compose -f compose.prod.yaml up -d --no-deps --pull never --wait backend
+```
+
+Run `up` once `db-check` reports `connected: true`, `tls: true`,
+`schema_current: true`, and `privileged_role: false`.
 
 ## Runtime permissions and rollback
 
