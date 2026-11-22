@@ -10,7 +10,7 @@ from cashly.db.commands import alembic_config
 from cashly.db.connection import build_engine, database_url
 
 CATEGORIES = (
-    ("food_drink", "Makanan & Minuman"),
+    ("food_drink", "Makanan dan Minuman"),
     ("transport", "Transportasi"),
     ("groceries", "Belanja Kebutuhan"),
     ("bills", "Tagihan"),
