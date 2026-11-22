@@ -113,7 +113,7 @@ async def send(
         message.update(
             kind="test",
             title="Tes notifikasi Cashly",
-            body="Push di perangkat ini berhasil diterima. Ini pesan tes dari staging.",
+            body="Notifikasi tes dari staging berhasil diterima di perangkat ini.",
         )
     payload = json.dumps(message).encode()
     response = await client.post(
