@@ -27,3 +27,6 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
 -- History survives disconnect; application runtime can only read/append.
 GRANT SELECT, INSERT ON cashly.whatsapp_link_history TO cashly_runtime;
 GRANT SELECT, INSERT, UPDATE ON cashly.whatsapp_capture_jobs TO cashly_runtime;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON cashly.notification_preferences,
+    cashly.notifications, cashly.push_subscriptions, cashly.push_deliveries TO cashly_runtime;
