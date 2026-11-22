@@ -3,7 +3,7 @@ from sqlalchemy import text
 
 from cashly.core.environment import ConfigurationError, resolve_environment
 from cashly.core.settings import Settings
-from cashly.db.commands import verify_development_target
+from cashly.db.commands import verify_migration_target
 from cashly.db.connection import build_engine
 from cashly.db.models import Base
 
@@ -46,10 +46,10 @@ else:
     settings = config.attributes.get("settings")
     if settings is None and "connection" not in config.attributes:
         settings = Settings.from_selection(resolve_environment())
+        if settings.environment == "prod":
+            raise ConfigurationError("Use python -m cashly db-upgrade for production migrations.")
     if settings is not None:
-        if settings.environment not in {"dev", "staging"}:
-            raise ConfigurationError("Online Alembic operations support dev/staging only.")
-        verify_development_target(settings)
+        verify_migration_target(settings)
     engine = None
     supplied = config.attributes.get("connection")
     try:

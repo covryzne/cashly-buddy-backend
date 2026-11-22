@@ -11,7 +11,7 @@ from cashly.db.commands import (
     check_database,
     render_migration_sql,
     upgrade_database,
-    verify_development_target,
+    verify_migration_target,
 )
 from cashly.db.connection import Database, build_engine, database_url
 
@@ -121,17 +121,50 @@ def test_tls_diagnostic_uses_client_driver_not_pooler_server_view(client_tls):
     assert all("pg_stat_ssl" not in str(call.args[0]) for call in connection.scalar.call_args_list)
 
 
-def test_migrations_reject_prod_without_connecting():
+def test_production_upgrade_reaches_online_alembic():
+    settings = Settings(
+        environment="prod",
+        supabase_url="https://fictional-ref.supabase.co",
+        database_url="postgresql://app.fictional-ref:p@host.pooler.supabase.com/postgres",
+        migration_database_url="postgresql://postgres:p@db.fictional-ref.supabase.co/postgres",
+    )
+    with patch("cashly.db.connection.build_engine") as build:
+        build.return_value.connect.side_effect = RuntimeError("private-secret")
+        with pytest.raises(
+            ConfigurationError, match="Migration failed and was rolled back"
+        ) as error:
+            upgrade_database(settings)
+    build.assert_called_once_with(settings, migration=True)
+    assert "private-secret" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("migration_url", "message"),
+    [
+        ("postgresql://admin:p@db.staging-ref.supabase.co/postgres", "mismatch"),
+        ("postgresql://admin:p@127.0.0.1/postgres", "mismatch"),
+        ("postgresql://app:p@db.fictional-ref.supabase.co/postgres", "separate database role"),
+        ("postgresql://admin:p@db.fictional-ref.supabase.co/other", "mismatch"),
+        ("postgresql://admin:p@db.fictional-ref.supabase.co/postgres?host=other", "mismatch"),
+    ],
+)
+def test_production_upgrade_rejects_mismatched_target_without_connecting(migration_url, message):
+    settings = Settings(
+        environment="prod",
+        supabase_url="https://fictional-ref.supabase.co",
+        database_url="postgresql://app.fictional-ref:p@host.pooler.supabase.com/postgres",
+        migration_database_url=migration_url,
+    )
     with patch("cashly.db.commands.command.upgrade") as upgrade:
-        with pytest.raises(ConfigurationError, match="dev/staging only"):
-            upgrade_database(Settings(environment="prod"))
+        with pytest.raises(ConfigurationError, match=message):
+            upgrade_database(settings)
     upgrade.assert_not_called()
 
 
 def test_staging_migration_uses_selected_settings():
     settings = Settings(environment="staging")
     with (
-        patch("cashly.db.commands.verify_development_target") as verify,
+        patch("cashly.db.commands.verify_migration_target") as verify,
         patch("cashly.db.commands.command.upgrade") as upgrade,
     ):
         upgrade_database(settings)
@@ -150,7 +183,7 @@ def test_remote_migration_target_must_match_supabase_project():
             "postgresql://postgres:p@db.fictional-ref.supabase.co:5432/postgres"
         ),
     }
-    verify_development_target(Settings(**good))
+    verify_migration_target(Settings(**good))
     for field, value in [
         ("supabase_url", "https://other.supabase.co"),
         (
@@ -160,7 +193,7 @@ def test_remote_migration_target_must_match_supabase_project():
         ("database_url", SecretStr("postgresql://app.other:p@host.pooler.supabase.com/postgres")),
     ]:
         with pytest.raises(ConfigurationError, match="mismatch"):
-            verify_development_target(Settings(**{**good, field: value}))
+            verify_migration_target(Settings(**{**good, field: value}))
 
 
 @pytest.mark.parametrize(

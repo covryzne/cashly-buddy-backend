@@ -16,7 +16,7 @@ from sqlalchemy import select, text
 from cashly.core.auth import Identity
 from cashly.core.environment import PROJECT_ROOT, ConfigurationError, resolve_environment
 from cashly.core.settings import Settings
-from cashly.db.commands import check_database, verify_development_target
+from cashly.db.commands import check_database, verify_migration_target
 from cashly.db.connection import Database, build_engine, database_url
 from cashly.db.local_data import CATEGORIES, verify_local_target
 from cashly.db.models import IdempotencyRecord
@@ -118,7 +118,7 @@ def verify_seed_target(settings):
     if any(host in loopback for host in hosts):
         verify_local_target(settings)
     else:
-        verify_development_target(settings)
+        verify_migration_target(settings)
 
 
 def seed_reference(settings):
