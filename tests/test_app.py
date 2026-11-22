@@ -160,6 +160,13 @@ def test_runtime_openapi_does_not_claim_unimplemented_endpoints(app):
         "/api/v1/gamification/streak/freeze",
         "/api/v1/reports/summary",
         "/api/v1/reports/trend",
+        "/api/v1/notifications",
+        "/api/v1/notifications/preferences",
+        "/api/v1/notifications/preferences/device",
+        "/api/v1/notifications/read-all",
+        "/api/v1/notifications/{notification_id}/read",
+        "/api/v1/notifications/push",
+        "/api/v1/notifications/push/status",
     }
     assert "HealthEnvelope" in schema["components"]["schemas"]
 
@@ -176,3 +183,4 @@ def test_docs_disabled_in_production():
     assert client.get("/docs").status_code == 404
     assert client.get("/openapi.json").status_code == 404
     assert client.get("/api/v1/health").status_code == 200
+    assert client.post("/api/v1/notifications/push/test", json={}).status_code == 404

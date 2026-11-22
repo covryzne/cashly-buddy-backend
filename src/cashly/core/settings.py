@@ -1,5 +1,6 @@
 import json
 from collections.abc import Mapping
+from datetime import time
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -66,6 +67,10 @@ class Settings(BaseModel):
     )
     ai_attempt_timeout_seconds: float = Field(default=20, ge=1, le=40)
     ai_total_timeout_seconds: float = Field(default=60, ge=5, le=60)
+    notification_worker_enabled: bool = False
+    production_reminder_times: tuple[time, time, time] = (time(8), time(12), time(19))
+    web_push_private_key: SecretStr | None = Field(default=None, repr=False)
+    web_push_subject: str = ""
     whatsapp_enabled: bool = False
     whatsapp_recording_enabled: bool = False
     whatsapp_app_url: str = ""
@@ -75,6 +80,22 @@ class Settings(BaseModel):
     whatsapp_integration_key: SecretStr | None = Field(default=None, repr=False)
     whatsapp_hash_secret: SecretStr | None = Field(default=None, repr=False)
     whatsapp_encryption_key: SecretStr | None = Field(default=None, repr=False)
+
+    @field_validator("production_reminder_times", mode="before")
+    @classmethod
+    def parse_production_reminder_times(cls, value):
+        if isinstance(value, str):
+            return tuple(part.strip() for part in value.split(","))
+        return value
+
+    @field_validator("production_reminder_times")
+    @classmethod
+    def validate_production_reminder_times(cls, value):
+        if any(slot.second or slot.microsecond or slot.tzinfo is not None for slot in value):
+            raise ValueError("Production reminder times use HH:mm WIB.")
+        if len(set(value)) != 3:
+            raise ValueError("Production reminder times must be distinct.")
+        return tuple(sorted(value))
 
     @field_validator("ai_provider", mode="before")
     @classmethod
@@ -196,10 +217,17 @@ class Settings(BaseModel):
                 openrouter_image_model=values.get("OPENROUTER_IMAGE_MODEL") or None,
                 openrouter_audio_model=values.get("OPENROUTER_AUDIO_MODEL") or None,
                 openrouter_timeout_seconds=values.get("OPENROUTER_TIMEOUT_SECONDS", "35"),
+                notification_worker_enabled=values.get("NOTIFICATION_WORKER_ENABLED", "false"),
+                production_reminder_times=values.get(
+                    "PRODUCTION_REMINDER_TIMES", "08:00,12:00,19:00"
+                ),
+                web_push_private_key=values.get("WEB_PUSH_PRIVATE_KEY") or None,
+                web_push_subject=values.get("WEB_PUSH_SUBJECT", ""),
             )
         except (ValidationError, ValueError, TypeError):
             raise ConfigurationError(
-                "Invalid settings; check PORT, LOG_LEVEL, CORS_ORIGINS and DB pool limits. "
+                "Invalid settings; check PORT, LOG_LEVEL, CORS_ORIGINS, "
+                "PRODUCTION_REMINDER_TIMES and DB pool limits. "
                 "Values are omitted for privacy."
             ) from None
         if settings.environment != "dev":
